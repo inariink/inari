@@ -59,6 +59,7 @@ local SOUND_MEDIA = {
     { name = "|cfff47c9bBait - inari|r", file = "Bait.ogg" },
     { name = "|cfff47c9bBeam - inari|r", file = "Beam.ogg" },
     { name = "|cfff47c9bBehind - inari|r", file = "Behind.ogg" },
+    { name = "|cfff47c9bBleed - inari|r", file = "Bleed.ogg" },
     { name = "|cfff47c9bBloodlust - inari|r", file = "Bloodlust.ogg" },
     { name = "|cfff47c9bBomb - inari|r", file = "Bomb.ogg" },
     { name = "|cfff47c9bBreath - inari|r", file = "Breath.ogg" },
@@ -76,6 +77,7 @@ local SOUND_MEDIA = {
     { name = "|cfff47c9bDodge Inc - inari|r", file = "DodgeInc.ogg" },
     { name = "|cfff47c9bDodge - inari|r", file = "Dodge.ogg" },
     { name = "|cfff47c9bDot - inari|r", file = "Dot.ogg" },
+    { name = "|cfff47c9bEnrage - inari|r", file = "Enrage.ogg" },
     { name = "|cfff47c9bExternal - inari|r", file = "External.ogg" },
     { name = "|cfff47c9bFixate - inari|r", file = "Fixate.ogg" },
     { name = "|cfff47c9bFreedom - inari|r", file = "Freedom.ogg" },
@@ -115,6 +117,7 @@ local SOUND_MEDIA = {
     { name = "|cfff47c9bRe-buff - inari|r", file = "Re-buff.ogg" },
     { name = "|cfff47c9bRed - inari|r", file = "Red.ogg" },
     { name = "|cfff47c9bReflect - inari|r", file = "Reflect.ogg" },
+    { name = "|cfff47c9bRescue - inari|r", file = "Rescue.ogg" },
     { name = "|cfff47c9bRight - inari|r", file = "Right.ogg" },
     { name = "|cfff47c9bRun - inari|r", file = "Run.ogg" },
     { name = "|cfff47c9bSac - inari|r", file = "Sac.ogg" },
@@ -127,6 +130,7 @@ local SOUND_MEDIA = {
     { name = "|cfff47c9bStop Cast - inari|r", file = "StopCast.ogg" },
     { name = "|cfff47c9bSwap - inari|r", file = "Swap.ogg" },
     { name = "|cfff47c9bSwitch - inari|r", file = "Switch.ogg" },
+    { name = "|cfff47c9bTankHit - inari|r", file = "Tankhit.ogg" },
     { name = "|cfff47c9bTaunt - inari|r", file = "Taunt.ogg" },
     { name = "|cfff47c9bTotem - inari|r", file = "Totem.ogg" },
     { name = "|cfff47c9bTrap - inari|r", file = "Trap.ogg" },
@@ -775,6 +779,11 @@ EnsureDB = function()
     if portraits.target.anchor ~= "LEFT" and portraits.target.anchor ~= "RIGHT" then portraits.target.anchor = "RIGHT" end
     if type(portraits.target.x) ~= "number" then portraits.target.x = 0 end
     if type(portraits.target.y) ~= "number" then portraits.target.y = 0 end
+    if InariDB.targetArrows == nil then InariDB.targetArrows = true end
+    if type(InariDB.targetArrowSize) ~= "number" then InariDB.targetArrowSize = 30 end
+    InariDB.targetArrowSize = math.floor(InariDB.targetArrowSize + 0.5)
+    if InariDB.targetArrowSize < 12 then InariDB.targetArrowSize = 12 end
+    if InariDB.targetArrowSize > 80 then InariDB.targetArrowSize = 80 end
 end
 
 local function ApplyFriendlyPlayerNameplatePreference()
@@ -1090,6 +1099,7 @@ local function ApplyAll(force)
     end
     local patched = ns.PatchAllFrames and ns.PatchAllFrames() or 0
     if ns.RefreshPortraits then ns.RefreshPortraits() end
+    if ns.RefreshTargetArrows then ns.RefreshTargetArrows() end
     if ns.QueueFrameShadowRefresh then
         ns.QueueFrameShadowRefresh()
     elseif ns.RefreshFrameShadows then
@@ -1245,7 +1255,7 @@ local function ShowHelp()
     Print("/inari or /iui opens settings, /inari help shows this list")
     Print("general: /inari on|off, /inari apply, /inari media")
     Print("appearance: /inari appearance dark|class, /inari layout 16|21, /inari bg on|off, /inari theme on|off, /inari tint 75, /inari opacity 85, /inari shadows on|off")
-    Print("extras: /inari idlefade on|off, /inari paging on|off, /inari chat right|left, /inari portraits")
+    Print("extras: /inari idlefade on|off, /inari arrows on|off|30, /inari paging on|off, /inari chat right|left, /inari portraits")
     Print("setup: /inari install [ellesmere [16|21]|bigwigs|editmode|exboss|sarena|baganator|settings], /inari cvars, /inari fct on|off, /inari fps, /inari graphics inari")
     Print("profiles: /inari profiles, /inari cdm import")
 end
@@ -1358,6 +1368,30 @@ SlashCmdList.INARI = function(msg)
         else
             Print("usage: /inari idlefade on|off")
             return
+        end
+    elseif cmd == "arrows" or cmd == "targetarrows" then
+        if arg == "on" or arg == "1" or arg == "true" then
+            InariDB.targetArrows = true
+            if ns.RefreshTargetArrows then ns.RefreshTargetArrows() end
+            Print("target arrows enabled")
+        elseif arg == "off" or arg == "0" or arg == "false" then
+            InariDB.targetArrows = false
+            if ns.RefreshTargetArrows then ns.RefreshTargetArrows() end
+            Print("target arrows disabled")
+        else
+            local size = tonumber(arg)
+            if size then
+                size = math.floor(size + 0.5)
+                if size < 12 then size = 12 end
+                if size > 80 then size = 80 end
+                InariDB.targetArrowSize = size
+                InariDB.targetArrows = true
+                if ns.RefreshTargetArrows then ns.RefreshTargetArrows() end
+                Print("target arrow size set to " .. tostring(size))
+            else
+                Print("usage: /inari arrows on|off|30")
+                return
+            end
         end
     elseif cmd == "paging" or cmd == "actionbarpaging" or cmd == "barpaging" then
         if arg == "off" or arg == "0" or arg == "false" or arg == "disable" or arg == "disabled" then
@@ -1752,6 +1786,7 @@ ns.ApplyFriendlyPlayerNameplatePreference = ApplyFriendlyPlayerNameplatePreferen
 ns.HookFriendlyPlayerNameplateCVars = HookFriendlyPlayerNameplateCVars
 ns.GetEllesmereProfile = GetEllesmereProfile
 ns.GetEllesmereRaidFramesProfile = GetEllesmereRaidFramesProfile
+ns.GetEllesmereAddonProfile = GetEllesmereAddonProfile
 ns.EnsureEllesmereAddonProfile = EnsureEllesmereAddonProfile
 
 ns.UnitKey = UnitKey

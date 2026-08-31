@@ -1,4 +1,5 @@
 package/
 *.zip
+inari/Media/Sounds_original/
 .DS_Store
 Thumbs.db

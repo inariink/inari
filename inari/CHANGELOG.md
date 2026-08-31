@@ -1,3 +1,9 @@
+## inari 1.0.6
+
+- Added Nameplate target arrows, on by default. Toggle and resize them in extras in `/inari` or with `/inari arrows on|off|30`.
+- Updated EXBoss profile for season 2!
+- Cooldown Manager layouts are updated for every class. Outdated CDM profiles now show in the Profiles updated dialog.
+
 ## inari 1.0.5
 
 - First public release, slash commands are `/inari`, `/iui`, and `/inariui`.

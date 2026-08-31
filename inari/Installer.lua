@@ -53,7 +53,7 @@ function ns.BuildInstallerPage(configFrame, ui)
         },
         {
             title = "EXBoss",
-            copy = "Imports the inari EXBoss profile, including trash cooldowns and boss slots.",
+            copy = "Imports the inari EXBoss profile, including appearance and M+ / raid role slots.",
             action = "IMPORT EXBOSS",
             addon = "EXBoss",
             skippable = true,

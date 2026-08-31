@@ -229,6 +229,20 @@ local function BuildExtras(frame, ui)
         page:SetMuted(message)
         Print(message)
     end)
+    local arrowsToggle = combat:AddToggle("inari target arrows", InariDB.targetArrows == true, function(_, checked)
+        InariDB.targetArrows = checked
+        if ns.RefreshTargetArrows then ns.RefreshTargetArrows() end
+        local message = checked and "target arrows enabled" or "target arrows disabled"
+        page:SetMuted(message)
+        Print(message)
+    end)
+    local arrowsSizeRow = combat:AddStepperRow("Arrow size", InariDB.targetArrowSize or 30, 12, 80, 1, function(_, value)
+        InariDB.targetArrowSize = value
+        if ns.RefreshTargetArrows then ns.RefreshTargetArrows() end
+        local message = "target arrow size set to " .. tostring(value)
+        page:SetMuted(message)
+        Print(message)
+    end)
     local pagingToggle = combat:AddToggle("Disable form/stealth action bar paging", InariDB.disableEllesmereActionBarPaging == true, function(_, checked)
         InariDB.disableEllesmereActionBarPaging = checked
         local applied = ns.ApplyEllesmereActionBarPagingOverride()
@@ -311,6 +325,8 @@ local function BuildExtras(frame, ui)
     function page:Refresh()
         idleToggle:SetChecked(InariDB.fadeIdlePlayerAndCooldowns == true)
         nameplateToggle:SetChecked(InariDB.disableFriendlyPlayerNameplates == true)
+        arrowsToggle:SetChecked(InariDB.targetArrows == true)
+        arrowsSizeRow:SetValue(InariDB.targetArrowSize or 30, true)
         pagingToggle:SetChecked(InariDB.disableEllesmereActionBarPaging == true)
         chatControl:SetValue(InariDB.forceChatSidebarRight and "right" or "left", true)
         ns.EnsureDB()
@@ -707,9 +723,11 @@ local function BuildOverview(frame, ui)
         local disableNameplates = InariDB.disableFriendlyPlayerNameplates == true
         local disablePaging = InariDB.disableEllesmereActionBarPaging == true
         local portraitsOn = InariDB.portraits and InariDB.portraits.enabled == true
+        local arrowsOn = InariDB.targetArrows == true
         extrasCard:SetStatusLines({
             { text = "Idle Fade " .. (idleFade and "on" or "off"), on = idleFade },
             { text = "Disable friendly nameplates " .. (disableNameplates and "on" or "off"), on = disableNameplates },
+            { text = "Target arrows " .. (arrowsOn and "on" or "off"), on = arrowsOn },
             { text = "Disable action bar paging " .. (disablePaging and "on" or "off"), on = disablePaging },
             { text = "Portraits " .. (portraitsOn and "on" or "off"), on = portraitsOn },
         })

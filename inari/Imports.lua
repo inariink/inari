@@ -13,6 +13,8 @@ local MarkImportedProfileVersion
 local ActivateEllesmereLayoutProfile
 local EllesmereProfileExists
 local GetActiveEllesmereProfile
+local ImportInariCooldownLayouts
+local HasInariCooldownLayouts
 
 local function GetEllesmereLayoutProfileName(aspect)
     aspect = aspect or (ns.GetLayoutAspect and ns.GetLayoutAspect()) or "16"
@@ -471,50 +473,29 @@ local function ImportEXBossProfile()
 
     TryLoadAddon("EXBoss")
 
-    local IE = ExBoss and ExBoss.Voice and ExBoss.Voice.ImportExport
-    if not IE or type(IE.DecodePayload) ~= "function" or type(IE.GetImportSummary) ~= "function" or type(IE.Import) ~= "function" then
+    -- Current EXBoss ships EXBXC v7 bundles through EXBossWagoAPI. The older
+    -- DecodePayload / GetImportSummary / Import helpers are gone.
+    local api = _G.EXBossWagoAPI
+    if type(api) ~= "table" or type(api.ImportProfile) ~= "function" then
         return false, "EXBoss import API is not available"
     end
 
-    local payload, decodeErr = IE:DecodePayload(importString)
-    if not payload then
-        return false, "EXBoss import string is invalid: " .. tostring(decodeErr)
+    if InCombatLockdown and InCombatLockdown() then
+        return false, "cannot import EXBoss in combat"
     end
 
-    local summary, summaryErr = IE:GetImportSummary(payload)
-    if not summary then
-        return false, "EXBoss import summary failed: " .. tostring(summaryErr)
-    end
-
-    local importSlots = {}
-    local hasSlot = false
-    local availableSlots = type(summary.slotAvailability) == "table" and summary.slotAvailability or {}
-    for _, slotKey in ipairs(EXBOSS_IMPORT_SLOT_KEYS) do
-        if availableSlots[slotKey] == true then
-            importSlots[slotKey] = true
-            hasSlot = true
-        end
-    end
-
-    local options = {
-        importAppearance = summary.hasAppearance == true,
-        importTrashCD = summary.hasTrashCD == true,
-        importSlots = importSlots,
-        namePrefix = "inari",
-    }
-    if not options.importAppearance and not options.importTrashCD and not hasSlot then
-        return false, "EXBoss import string has no supported profile sections"
-    end
-
-    local ok, imported, err = pcall(IE.Import, IE, payload, options)
+    local ok, imported, result = pcall(api.ImportProfile, api, importString)
     if not ok then
         return false, tostring(imported)
     end
     if not imported then
-        return false, tostring(err or "EXBoss import failed")
+        return false, tostring(result or "EXBoss import failed")
     end
 
     MarkImportedProfileVersion("exboss")
+    if type(result) == "table" and result.reloadRequired == true then
+        return true, "EXBoss profile imported as inari (reload to finish)"
+    end
     return true, "EXBoss profile imported as inari"
 end
 
@@ -1135,6 +1116,16 @@ local function GetManagedProfileDefs()
             end,
             import = ImportBaganatorProfile,
         },
+        {
+            key = "cdm",
+            label = "Cooldown Manager",
+            exists = function()
+                return HasInariCooldownLayouts()
+            end,
+            import = function()
+                return ImportInariCooldownLayouts()
+            end,
+        },
     }
 end
 
@@ -1397,7 +1388,7 @@ local function RenameInariCooldownLayouts(layoutManager, layoutIDs)
     return activeLayoutID
 end
 
-local function ImportInariCooldownLayouts()
+ImportInariCooldownLayouts = function()
     if InCombatLockdown and InCombatLockdown() then
         return false, "leave combat before importing cooldown layouts"
     end
@@ -1424,7 +1415,7 @@ local function ImportInariCooldownLayouts()
     return true, "imported " .. #layoutIDs .. " cooldown layouts, removed " .. removed .. " old inari layouts"
 end
 
-local function HasInariCooldownLayouts()
+HasInariCooldownLayouts = function()
     local layoutManager = GetCooldownLayoutManager()
     if not layoutManager or type(layoutManager.layouts) ~= "table" then return false end
     local prefix = "inari - "

@@ -3,7 +3,7 @@
 ## Notes: Modern configuration, profile imports and quality-of-life tools for inari.
 ## IconTexture: Interface\AddOns\inari\Media\logo.png
 ## Author: inari
-## Version: 1.0.5
+## Version: 1.0.6
 ## Dependencies: EllesmereUI, EllesmereUIUnitFrames
 ## OptionalDeps: EllesmereUIChat, EllesmereUIBlizzardSkin, EllesmereUIDamageMeters, EllesmereUIRaidFrames, BigWigs, EXBoss, sArena_Reloaded, Baganator
 ## SavedVariables: InariDB
@@ -12,6 +12,7 @@ CooldownLayouts.lua
 ProfileStrings.lua
 UI.lua
 Core.lua
+TargetArrows.lua
 Chat.lua
 Health.lua
 Portraits.lua

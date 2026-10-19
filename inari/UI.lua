@@ -107,14 +107,6 @@ local function PixelSize(frame, value)
     return value
 end
 
-local function SnapPoint(region, ...)
-    if PixelUtil and PixelUtil.SetPoint then
-        PixelUtil.SetPoint(region, ...)
-        return
-    end
-    region:SetPoint(...)
-end
-
 local function SnapSize(region, width, height)
     if PixelUtil and PixelUtil.SetSize then
         PixelUtil.SetSize(region, width, height)
@@ -1009,7 +1001,6 @@ function UI:CreateSegmentedControl(parent, options)
     end
 
     local previous
-    local count = #options
     for index, data in ipairs(options) do
         local button = UI:CreateGhostButton(row, data.label)
         button._value = data.value

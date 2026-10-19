@@ -1,5 +1,12 @@
 local ADDON_NAME, ns = ...
 
+-- WoW Forever (game type "camelot") runs the retail engine with vanilla content and
+-- reports a 1.60+ interface (16001). Same range check EllesmereUI_ClientGate.lua uses.
+do
+    local iface = select(4, GetBuildInfo())
+    ns.IS_FOREVER = type(iface) == "number" and iface >= 16000 and iface < 20000
+end
+
 local FRAME_NAMES = {
     player = "EllesmereUIUnitFrames_Player",
     target = "EllesmereUIUnitFrames_Target",
@@ -172,9 +179,8 @@ local State = {
     startupRetryVersion = 0,
     profileOfferScheduled = false,
     freshInstallerOpenScheduled = false,
+    freshInstallerOpened = false,
     profileUpdatePromptDismissedThisSession = false,
-    cooldownImportFrame = nil,
-    installerFrame = nil,
     installedProfilesPromptFrame = nil,
     profileUpdatePromptFrame = nil,
     fontsRegistered = false,
@@ -536,6 +542,32 @@ local function GetInariCVar(name)
     return nil
 end
 
+local afterCombatQueue = {}
+local afterCombatFrame
+
+-- Runs fn now, or once combat ends. Queuing the same key again replaces the earlier call.
+local function RunAfterCombat(key, fn)
+    if not (InCombatLockdown and InCombatLockdown()) then
+        fn()
+        return true
+    end
+
+    afterCombatQueue[key] = fn
+    if not afterCombatFrame then
+        afterCombatFrame = CreateFrame("Frame")
+        afterCombatFrame:SetScript("OnEvent", function(self)
+            self:UnregisterEvent("PLAYER_REGEN_ENABLED")
+            local queued = afterCombatQueue
+            afterCombatQueue = {}
+            for _, queuedFn in pairs(queued) do
+                queuedFn()
+            end
+        end)
+    end
+    afterCombatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+    return false
+end
+
 local function SetInariCVar(name, value)
     if InCombatLockdown and InCombatLockdown() then return false end
 
@@ -551,7 +583,13 @@ local function SetInariCVar(name, value)
     return ok and GetInariCVar(name) ~= nil
 end
 
+-- Returns applied, skipped, queued. In combat the whole table waits for combat to end.
 local function ApplyCVarTable(cvars)
+    if InCombatLockdown and InCombatLockdown() then
+        RunAfterCombat(cvars, function() ApplyCVarTable(cvars) end)
+        return 0, 0, true
+    end
+
     local applied = 0
     local skipped = 0
 
@@ -573,17 +611,24 @@ local function ApplyCVarTable(cvars)
     return applied, skipped
 end
 
+local function FormatCVarResult(prefix, applied, skipped, queued)
+    if queued then return prefix .. "queued until combat ends" end
+    local message = prefix .. applied .. " CVars"
+    if skipped > 0 then message = message .. ", " .. skipped .. " skipped" end
+    return message
+end
+
 local function ApplyFPSSettings()
-    local applied, skipped = ApplyCVarTable(FPS_CVARS)
+    local applied, skipped, queued = ApplyCVarTable(FPS_CVARS)
     if type(InariDB) == "table" then InariDB.graphicsPreset = "fps" end
 
-    return applied, skipped
+    return applied, skipped, queued
 end
 
 local function ApplyInariGraphicsSettings()
-    local applied, skipped = ApplyCVarTable(INARI_GRAPHICS_CVARS)
+    local applied, skipped, queued = ApplyCVarTable(INARI_GRAPHICS_CVARS)
     if type(InariDB) == "table" then InariDB.graphicsPreset = "inari" end
-    return applied, skipped
+    return applied, skipped, queued
 end
 
 local function ApplyFloatingCombatText(value)
@@ -598,8 +643,6 @@ local function ApplyFloatingCombatText(value)
     return ApplyCVarTable(cvars)
 end
 
-local ApplyChatSettings
-
 local function TryLoadAddon(name)
     if C_AddOns and C_AddOns.LoadAddOn then
         pcall(C_AddOns.LoadAddOn, name)
@@ -608,26 +651,10 @@ local function TryLoadAddon(name)
     end
 end
 
-local function CopyPlainTable(src, dest)
-    if type(dest) ~= "table" then dest = {} end
-    if type(src) ~= "table" then return dest end
-
-    for key, value in pairs(src) do
-        if type(value) == "table" then
-            dest[key] = CopyPlainTable(value, type(dest[key]) == "table" and dest[key] or {})
-        else
-            dest[key] = value
-        end
-    end
-
-    return dest
-end
-
 local function ApplyInariUIScale(applyLive)
     TryLoadAddon("EllesmereUI")
 
     if type(EllesmereUIDB) ~= "table" then EllesmereUIDB = {} end
-    EllesmereUIDB.ppFixedScale = true
     EllesmereUIDB.ppUIScaleAuto = false
     EllesmereUIDB.ppUIScale = CONST.UI_SCALE
 
@@ -685,110 +712,151 @@ local function GetEllesmereLayoutProfileName(aspect)
     return aspect == "21" and "inari21:9" or "inari16:9"
 end
 
+local function IsInariEllesmereProfile(name)
+    return name == "inari" or name == "inari16:9" or name == "inari21:9"
+end
+
+local function EllesmereProfileExists(profileName)
+    return type(EllesmereUIDB) == "table"
+        and type(EllesmereUIDB.profiles) == "table"
+        and type(EllesmereUIDB.profiles[profileName]) == "table"
+end
+
+local function GetActiveEllesmereProfile()
+    if EllesmereUI and type(EllesmereUI.GetActiveProfileName) == "function" then
+        local ok, profileName = pcall(EllesmereUI.GetActiveProfileName)
+        if ok and type(profileName) == "string" and profileName ~= "" then
+            return profileName
+        end
+    end
+
+    if type(EllesmereUIDB) == "table" and type(EllesmereUIDB.activeProfile) == "string" then
+        return EllesmereUIDB.activeProfile
+    end
+
+    return nil
+end
+
+-- Forced profile settings only apply while one of inari's own profiles is active.
+local function IsInariEllesmereProfileActive()
+    return IsInariEllesmereProfile(GetActiveEllesmereProfile())
+end
+
+local DB_DEFAULTS = {
+    enabled = true,
+    classBackground = true,
+    darkOpacity = true,
+    forceDarkMode = true,
+    forceEUITheme = true,
+    forceOpacity = true,
+    forceChatSidebarRight = true,
+    disableFriendlyPlayerNameplates = true,
+    fadeIdlePlayerAndCooldowns = false,
+    disableEllesmereActionBarPaging = true,
+    frameShadows = true,
+    profilePromptEnabled = true,
+    profileUpdateEnabled = true,
+    targetArrows = true,
+}
+local DB_AUTO_PRESET_KEYS = {
+    "enabled", "classBackground", "darkOpacity", "forceDarkMode", "forceEUITheme", "forceOpacity",
+    "forceChatSidebarRight", "disableFriendlyPlayerNameplates", "fadeIdlePlayerAndCooldowns",
+    "disableEllesmereActionBarPaging",
+}
+local DB_TABLE_KEYS = {
+    "profilePromptApplied", "profilePromptDismissed", "importedProfileVersions", "profileUpdateDismissed", "portraits",
+}
+local PORTRAIT_UNIT_ANCHORS = { player = "LEFT", target = "RIGHT" }
+
+local function ClampNumber(tbl, key, default, min, max)
+    local value = tbl[key]
+    if type(value) ~= "number" then value = default end
+    if min and value < min then value = min end
+    if max and value > max then value = max end
+    tbl[key] = value
+end
+
 EnsureDB = function()
+    -- Validated once per saved-variable table; setters clamp their own input.
+    if type(InariDB) == "table" and State.validatedDB == InariDB then return end
     if type(InariDB) ~= "table" then InariDB = {} end
-    if InariDB.autoPresetVersion ~= 1 then
-        InariDB.enabled = true
-        InariDB.classBackground = true
-        InariDB.darkOpacity = true
-        InariDB.forceDarkMode = true
-        InariDB.appearanceMode = "dark"
-        InariDB.forceEUITheme = true
-        InariDB.forceOpacity = true
-        InariDB.forceChatSidebarRight = true
-        InariDB.disableFriendlyPlayerNameplates = true
-        InariDB.fadeIdlePlayerAndCooldowns = false
-        InariDB.disableEllesmereActionBarPaging = true
-        InariDB.healthBarOpacity = 85
-        InariDB.tint = 0.75
-        InariDB.autoPresetVersion = 1
+    local db = InariDB
+
+    if db.autoPresetVersion ~= 1 then
+        for _, key in ipairs(DB_AUTO_PRESET_KEYS) do
+            db[key] = DB_DEFAULTS[key]
+        end
+        db.appearanceMode = "dark"
+        db.healthBarOpacity = 85
+        db.tint = 0.75
+        db.autoPresetVersion = 1
     end
-    if InariDB.enabled == nil then InariDB.enabled = true end
-    if InariDB.classBackground == nil then InariDB.classBackground = true end
-    if InariDB.darkOpacity == nil then InariDB.darkOpacity = true end
-    if InariDB.forceDarkMode == nil then InariDB.forceDarkMode = true end
-    if InariDB.appearanceMode ~= "dark" and InariDB.appearanceMode ~= "class" then
-        InariDB.appearanceMode = InariDB.forceDarkMode and "dark" or "class"
+    for key, value in pairs(DB_DEFAULTS) do
+        if db[key] == nil then db[key] = value end
     end
-    if InariDB.forceEUITheme == nil then InariDB.forceEUITheme = true end
-    if InariDB.forceOpacity == nil then InariDB.forceOpacity = true end
-    if InariDB.forceChatSidebarRight == nil then InariDB.forceChatSidebarRight = true end
-    if InariDB.disableFriendlyPlayerNameplates == nil then InariDB.disableFriendlyPlayerNameplates = true end
-    if InariDB.fadeIdlePlayerAndCooldowns == nil then InariDB.fadeIdlePlayerAndCooldowns = false end
-    if InariDB.disableEllesmereActionBarPaging == nil then InariDB.disableEllesmereActionBarPaging = true end
-    if type(InariDB.healthBarOpacity) ~= "number" then InariDB.healthBarOpacity = 85 end
-    if type(InariDB.tint) ~= "number" then InariDB.tint = 0.75 end
-    if InariDB.frameShadows == nil then InariDB.frameShadows = true end
-    if type(InariDB.frameShadowStrength) ~= "number" then InariDB.frameShadowStrength = 70 end
-    if InariDB.frameShadowStrength < 0 then InariDB.frameShadowStrength = 0 end
-    if InariDB.frameShadowStrength > 100 then InariDB.frameShadowStrength = 100 end
-    if type(InariDB.profilePromptApplied) ~= "table" then InariDB.profilePromptApplied = {} end
-    if type(InariDB.profilePromptDismissed) ~= "table" then InariDB.profilePromptDismissed = {} end
-    if InariDB.profilePromptEnabled == nil then InariDB.profilePromptEnabled = true end
-    if InariDB.layoutAspect ~= "16" and InariDB.layoutAspect ~= "21" then
-        InariDB.layoutAspect = DetectLayoutAspect()
+    if db.appearanceMode ~= "dark" and db.appearanceMode ~= "class" then
+        db.appearanceMode = db.forceDarkMode and "dark" or "class"
     end
-    if type(InariDB.importedProfileVersions) ~= "table" then InariDB.importedProfileVersions = {} end
-    if type(InariDB.profileUpdateDismissed) ~= "table" then InariDB.profileUpdateDismissed = {} end
-    if InariDB.profileUpdateEnabled == nil then InariDB.profileUpdateEnabled = true end
-    if InariDB.graphicsPreset ~= "fps" and InariDB.graphicsPreset ~= "inari" then InariDB.graphicsPreset = nil end
-    if InariDB.floatingCombatTextPreset ~= "enabled" and InariDB.floatingCombatTextPreset ~= "disabled" then InariDB.floatingCombatTextPreset = nil end
-    InariDB.qol = nil
-    if InariDB.healthBarOpacity < 0 then InariDB.healthBarOpacity = 0 end
-    if InariDB.healthBarOpacity > 100 then InariDB.healthBarOpacity = 100 end
-    if InariDB.tint < 0 then InariDB.tint = 0 end
-    if InariDB.tint > 1 then InariDB.tint = 1 end
-    if type(InariDB.lastConfigPage) ~= "string" then InariDB.lastConfigPage = "home" end
-    if type(InariDB.portraits) ~= "table" then InariDB.portraits = {} end
-    local portraits = InariDB.portraits
-    if InariDB.extrasDefaultsVersion ~= 2 then
-        InariDB.disableEllesmereActionBarPaging = true
-        InariDB.forceChatSidebarRight = true
-        InariDB.disableFriendlyPlayerNameplates = true
-        InariDB.fadeIdlePlayerAndCooldowns = false
+    for _, key in ipairs(DB_TABLE_KEYS) do
+        if type(db[key]) ~= "table" then db[key] = {} end
+    end
+    ClampNumber(db, "healthBarOpacity", 85, 0, 100)
+    ClampNumber(db, "tint", 0.75, 0, 1)
+    ClampNumber(db, "frameShadowStrength", 70, 0, 100)
+    if type(db.targetArrowSize) == "number" then
+        db.targetArrowSize = math.floor(db.targetArrowSize + 0.5)
+    end
+    ClampNumber(db, "targetArrowSize", 30, 12, 80)
+    if db.layoutAspect ~= "16" and db.layoutAspect ~= "21" then
+        db.layoutAspect = DetectLayoutAspect()
+    end
+    if db.graphicsPreset ~= "fps" and db.graphicsPreset ~= "inari" then db.graphicsPreset = nil end
+    if db.floatingCombatTextPreset ~= "enabled" and db.floatingCombatTextPreset ~= "disabled" then db.floatingCombatTextPreset = nil end
+    db.qol = nil
+    if type(db.lastConfigPage) ~= "string" then db.lastConfigPage = "home" end
+
+    local portraits = db.portraits
+    if db.extrasDefaultsVersion ~= 2 then
+        db.disableEllesmereActionBarPaging = true
+        db.forceChatSidebarRight = true
+        db.disableFriendlyPlayerNameplates = true
+        db.fadeIdlePlayerAndCooldowns = false
         portraits.enabled = true
         portraits.size = 52
         portraits.zoom = 0.22
-        portraits.player = type(portraits.player) == "table" and portraits.player or {}
-        portraits.player.enable = true
-        portraits.player.anchor = "LEFT"
-        portraits.player.x = 0
-        portraits.player.y = 0
-        portraits.target = type(portraits.target) == "table" and portraits.target or {}
-        portraits.target.enable = true
-        portraits.target.anchor = "RIGHT"
-        portraits.target.x = 0
-        portraits.target.y = 0
-        InariDB.extrasDefaultsVersion = 2
+        for unit, anchor in pairs(PORTRAIT_UNIT_ANCHORS) do
+            local unitDB = type(portraits[unit]) == "table" and portraits[unit] or {}
+            unitDB.enable = true
+            unitDB.anchor = anchor
+            unitDB.x = 0
+            unitDB.y = 0
+            portraits[unit] = unitDB
+        end
+        db.extrasDefaultsVersion = 2
     end
     if portraits.enabled == nil then portraits.enabled = true end
-    if type(portraits.size) ~= "number" then portraits.size = 52 end
-    if portraits.size < 16 then portraits.size = 16 end
-    if portraits.size > 256 then portraits.size = 256 end
-    if type(portraits.zoom) ~= "number" then portraits.zoom = 0.22 end
-    if portraits.zoom < 0 then portraits.zoom = 0 end
-    if portraits.zoom > 1 then portraits.zoom = 1 end
-    if type(portraits.level) ~= "number" then portraits.level = 20 end
-    if type(portraits.player) ~= "table" then portraits.player = {} end
-    if portraits.player.enable == nil then portraits.player.enable = true end
-    if portraits.player.anchor ~= "LEFT" and portraits.player.anchor ~= "RIGHT" then portraits.player.anchor = "LEFT" end
-    if type(portraits.player.x) ~= "number" then portraits.player.x = 0 end
-    if type(portraits.player.y) ~= "number" then portraits.player.y = 0 end
-    if type(portraits.target) ~= "table" then portraits.target = {} end
-    if portraits.target.enable == nil then portraits.target.enable = true end
-    if portraits.target.anchor ~= "LEFT" and portraits.target.anchor ~= "RIGHT" then portraits.target.anchor = "RIGHT" end
-    if type(portraits.target.x) ~= "number" then portraits.target.x = 0 end
-    if type(portraits.target.y) ~= "number" then portraits.target.y = 0 end
-    if InariDB.targetArrows == nil then InariDB.targetArrows = true end
-    if type(InariDB.targetArrowSize) ~= "number" then InariDB.targetArrowSize = 30 end
-    InariDB.targetArrowSize = math.floor(InariDB.targetArrowSize + 0.5)
-    if InariDB.targetArrowSize < 12 then InariDB.targetArrowSize = 12 end
-    if InariDB.targetArrowSize > 80 then InariDB.targetArrowSize = 80 end
+    ClampNumber(portraits, "size", 52, 16, 256)
+    ClampNumber(portraits, "zoom", 0.22, 0, 1)
+    ClampNumber(portraits, "level", 20)
+    for unit, anchor in pairs(PORTRAIT_UNIT_ANCHORS) do
+        if type(portraits[unit]) ~= "table" then portraits[unit] = {} end
+        local unitDB = portraits[unit]
+        if unitDB.enable == nil then unitDB.enable = true end
+        if unitDB.anchor ~= "LEFT" and unitDB.anchor ~= "RIGHT" then unitDB.anchor = anchor end
+        ClampNumber(unitDB, "x", 0)
+        ClampNumber(unitDB, "y", 0)
+    end
+
+    State.validatedDB = db
 end
 
 local function ApplyFriendlyPlayerNameplatePreference()
     EnsureDB()
     if not InariDB.disableFriendlyPlayerNameplates then return false end
+    if InCombatLockdown and InCombatLockdown() then
+        RunAfterCombat("friendlyNameplates", ApplyFriendlyPlayerNameplatePreference)
+        return false
+    end
 
     local changed = false
     if GetInariCVar("nameplateShowFriendlyPlayers") ~= "0" then
@@ -852,8 +920,9 @@ local function RestoreIdleFadeFrames()
     end
 end
 
-local function ShouldIdleFade()
+local function ShouldIdleFade(enteringCombat)
     EnsureDB()
+    if enteringCombat then return false end
     if not InariDB.enabled then return false end
     if InariDB.fadeIdlePlayerAndCooldowns ~= true then return false end
 
@@ -924,8 +993,8 @@ local function HookIdleFadeAlpha(frame)
     end)
 end
 
-local function ApplyIdleFadeState()
-    if not ShouldIdleFade() then
+local function ApplyIdleFadeState(enteringCombat)
+    if not ShouldIdleFade(enteringCombat) then
         RestoreIdleFadeFrames()
         return
     end
@@ -1066,6 +1135,7 @@ local function ApplySignature()
         tostring(InariDB.forceChatSidebarRight),
         tostring(InariDB.fadeIdlePlayerAndCooldowns),
         tostring(InariDB.disableFriendlyPlayerNameplates),
+        tostring(GetActiveEllesmereProfile()),
     }, "|")
 end
 
@@ -1085,16 +1155,17 @@ end
 
 local function ApplyAll(force)
     EnsureDB()
+    if ns.InvalidateAppearanceToken then ns.InvalidateAppearanceToken() end
     local signature = ApplySignature()
     local settingsUnchanged = State.applySignature == signature
     if not force and settingsUnchanged and State.framesPatched then
         return State.lastPatchCount or 0
     end
-    if not settingsUnchanged or not State.framesPatched then
+    if InariDB.enabled and (not settingsUnchanged or not State.framesPatched) then
         ns.ApplyEllesmereThemeSettings()
         ns.ApplyConfiguredProfileSettings()
         ApplyFriendlyPlayerNameplatePreference()
-        ns.ApplyChatSettings()
+        if IsInariEllesmereProfileActive() then ns.ApplyChatSettings() end
         ns.ApplyEllesmereActionBarPagingOverride()
     end
     local patched = ns.PatchAllFrames and ns.PatchAllFrames() or 0
@@ -1193,48 +1264,121 @@ end
 
 local function ShouldOpenFreshInstaller()
     EnsureDB()
-    return InariDB.installerPendingFinalScale == true or InariDB.installerCompletedVersion ~= CONST.profilePromptVersion
+    if InariDB.installerPendingFinalScale == true then return true end
+    return InariDB.installerCompletedVersion ~= CONST.profilePromptVersion and InariDB.installerDeferred ~= true
 end
 
 local function ScheduleFreshInstallerOpen()
-    if State.freshInstallerOpenScheduled then return end
+    if State.freshInstallerOpenScheduled or State.freshInstallerOpened then return end
     State.freshInstallerOpenScheduled = true
     C_Timer.After(2, function()
         State.freshInstallerOpenScheduled = false
         if InCombatLockdown and InCombatLockdown() then return end
         if ShouldOpenFreshInstaller() then
+            State.freshInstallerOpened = true
             ns.ShowInstallerFrame()
         end
     end)
 end
 
-local function PrintDamageMeterPositions()
-    local found = false
-    for index = 1, 5 do
-        local frame = _G["EllesmereUIDMFrame" .. index]
-        if frame then
-            found = true
-            local left = frame:GetLeft()
-            local top = frame:GetTop()
-            local width = frame:GetWidth()
-            local height = frame:GetHeight()
-            if left and top and width and height then
-                Print(("dm window %d: x=%d, y=%d, width=%d, height=%d"):format(
-                    index,
-                    math.floor(left + 0.5),
-                    math.floor(top + 0.5),
-                    math.floor(width + 0.5),
-                    math.floor(height + 0.5)
-                ))
+-- EllesmereUI stores an opacity of 1 as the fraction 1.0 (100%), so that step is skipped.
+local function NormalizeHealthOpacity(value, previous)
+    if value ~= 1 then return value end
+    return (previous or 0) > 1 and 0 or 2
+end
+
+local RESET_KEEP_KEYS = {
+    installerCompletedVersion = true,
+    installerPendingFinalScale = true,
+    installerDeferred = true,
+    profilePromptApplied = true,
+    profilePromptDismissed = true,
+    importedProfileVersions = true,
+    profileUpdateDismissed = true,
+    profileVersionsSeeded = true,
+    layoutAspect = true,
+    targetArrowPrev = true,
+}
+
+-- Back to inari's defaults. Install and profile bookkeeping is kept, and tables are
+-- emptied in place because the settings pages hold references to them.
+local function ResetSettings()
+    EnsureDB()
+    local portraits = InariDB.portraits
+    for key in pairs(InariDB) do
+        if not RESET_KEEP_KEYS[key] and key ~= "portraits" then
+            InariDB[key] = nil
+        end
+    end
+    for key, value in pairs(portraits) do
+        if type(value) == "table" then
+            wipe(value)
+        else
+            portraits[key] = nil
+        end
+    end
+    State.validatedDB = nil
+    EnsureDB()
+
+    ns.SetInariAppearanceMode(InariDB.appearanceMode)
+    ns.ApplyEllesmereActionBarPagingOverride()
+    UpdateIdleFadeController()
+    ScheduleApply(0, true)
+end
+
+-- Private EllesmereUI entry points inari relies on, grouped by the module that owns them.
+local DOCTOR_HOOKS = {
+    {
+        addon = "EllesmereUI",
+        fields = {
+            "DecodeImportString", "ImportProfile", "DeleteProfile", "SwitchProfile", "GetActiveProfileName",
+            "SetDarkModeAll", "RefreshAllAddons", "SetActiveTheme", "SetAccentColor", "GetClassColor",
+            "RegisterExternalInstaller", "_ModuleNS", "PP",
+        },
+    },
+    { addon = "EllesmereUIUnitFrames", globals = { "_EUF_ReloadFrames", "EllesmereUIUnitFrames_Player" } },
+    { addon = "EllesmereUIRaidFrames", globals = { "_ERF_RefreshAll" } },
+    { addon = "EllesmereUIActionBars", globals = { "_EAB_UpdateKeybinds", "EABBar_MainBar" } },
+    { addon = "EllesmereUICooldownManager", globals = { "_ECME_GetBarFrame", "_ECME_AceDB" } },
+    { addon = "EllesmereUINameplates", globals = { "_ENP_RefreshAllSettings" } },
+    { addon = "EllesmereUIChat", fields = { "_chatCFD" } },
+    { addon = "EllesmereUIBlizzardSkin", globals = { "_EDR_UpdateVisibility", "_EDR_Rebuild" } },
+    { addon = "EllesmereUIDamageMeters", globals = { "_EDM_BarTextures" } },
+}
+
+local function RunDoctor()
+    local getMetadata = C_AddOns and C_AddOns.GetAddOnMetadata
+    local isLoaded = C_AddOns and C_AddOns.IsAddOnLoaded
+    local function Version(addon)
+        return getMetadata and getMetadata(addon, "Version") or "unknown"
+    end
+
+    Print("doctor: inari " .. Version(ADDON_NAME) .. ", EllesmereUI " .. Version("EllesmereUI"))
+    local active = GetActiveEllesmereProfile()
+    Print("active EllesmereUI profile: " .. tostring(active or "unknown")
+        .. (IsInariEllesmereProfile(active) and "" or " (not an inari profile; forced settings are paused)"))
+
+    local problems = 0
+    for _, entry in ipairs(DOCTOR_HOOKS) do
+        if isLoaded and not isLoaded(entry.addon) then
+            Print(entry.addon .. ": not loaded")
+        else
+            local missing = {}
+            for _, name in ipairs(entry.globals or {}) do
+                if _G[name] == nil then missing[#missing + 1] = name end
+            end
+            for _, name in ipairs(entry.fields or {}) do
+                if not EllesmereUI or EllesmereUI[name] == nil then missing[#missing + 1] = "EllesmereUI." .. name end
+            end
+            if #missing > 0 then
+                problems = problems + #missing
+                Print(entry.addon .. ": |cffff6060missing|r " .. table.concat(missing, ", "))
             else
-                Print("dm window " .. index .. ": position is not available yet")
+                Print(entry.addon .. ": ok")
             end
         end
     end
-
-    if not found then
-        Print("no Damage Meter windows found")
-    end
+    Print(problems == 0 and "all hooks found" or (problems .. " hooks missing; parts of inari will not work with this EllesmereUI version"))
 end
 
 local function ShowHelp()
@@ -1253,7 +1397,7 @@ local function ShowHelp()
         " " .. tostring(InariDB.frameShadowStrength or 70) .. "%" ..
         ", layout=" .. GetLayoutAspectLabel())
     Print("/inari or /iui opens settings, /inari help shows this list")
-    Print("general: /inari on|off, /inari apply, /inari media")
+    Print("general: /inari on|off, /inari apply, /inari media, /inari doctor, /inari reset")
     Print("appearance: /inari appearance dark|class, /inari layout 16|21, /inari bg on|off, /inari theme on|off, /inari tint 75, /inari opacity 85, /inari shadows on|off")
     Print("extras: /inari idlefade on|off, /inari arrows on|off|30, /inari paging on|off, /inari chat right|left, /inari portraits")
     Print("setup: /inari install [ellesmere [16|21]|bigwigs|editmode|exboss|sarena|baganator|settings], /inari cvars, /inari fct on|off, /inari fps, /inari graphics inari")
@@ -1263,10 +1407,29 @@ end
 SLASH_INARI1 = "/inari"
 SLASH_INARI2 = "/iui"
 SLASH_INARI3 = "/inariui"
+local TOGGLE_WORDS = {
+    on = true, ["1"] = true, ["true"] = true, enable = true, enabled = true,
+    off = false, ["0"] = false, ["false"] = false, disable = false, disabled = false,
+}
+
+-- Maps an on/off word to true/false; nil for anything else.
+local function ParseToggle(arg)
+    return TOGGLE_WORDS[arg]
+end
+
+local function PrintCVarResult(prefix, applied, skipped, queued)
+    Print(FormatCVarResult(prefix, applied, skipped, queued))
+end
+
+function Inari_OnAddonCompartmentClick()
+    ns.ShowConfigFrame()
+end
+
 SlashCmdList.INARI = function(msg)
     EnsureDB()
     msg = (msg or ""):lower():match("^%s*(.-)%s*$")
     local cmd, arg = msg:match("^(%S+)%s*(.*)$")
+    local toggle = ParseToggle(arg)
 
     if not cmd or cmd == "" then
         ns.ShowConfigFrame()
@@ -1283,16 +1446,12 @@ SlashCmdList.INARI = function(msg)
         UpdateIdleFadeController()
         Print("disabled")
     elseif cmd == "bg" then
-        if arg == "on" or arg == "1" or arg == "true" then
-            InariDB.classBackground = true
-            Print("class background enabled")
-        elseif arg == "off" or arg == "0" or arg == "false" then
-            InariDB.classBackground = false
-            Print("class background disabled")
-        else
+        if toggle == nil then
             Print("usage: /inari bg on|off")
             return
         end
+        InariDB.classBackground = toggle
+        Print("class background " .. (toggle and "enabled" or "disabled"))
         ScheduleApply()
     elseif cmd == "appearance" or cmd == "mode" then
         if arg == "dark" or arg == "darkmode" then
@@ -1320,11 +1479,7 @@ SlashCmdList.INARI = function(msg)
             end
             local profileName = GetEllesmereLayoutProfileName(aspect)
             local ok, message
-            if type(EllesmereUIDB) == "table"
-                and type(EllesmereUIDB.profiles) == "table"
-                and type(EllesmereUIDB.profiles[profileName]) == "table"
-                and ns.ActivateEllesmereLayoutProfile
-            then
+            if EllesmereProfileExists(profileName) and ns.ActivateEllesmereLayoutProfile then
                 ok, message = ns.ActivateEllesmereLayoutProfile(profileName)
             else
                 ok, message = ns.ImportEllesmereUIProfile()
@@ -1333,75 +1488,52 @@ SlashCmdList.INARI = function(msg)
             if ok then ReloadUI() end
         end
     elseif cmd == "dark" then
-        if arg == "on" or arg == "1" or arg == "true" then
-            ns.SetInariAppearanceMode("dark")
-            Print("appearance set to dark mode")
-        elseif arg == "off" or arg == "0" or arg == "false" then
-            ns.SetInariAppearanceMode("class")
-            Print("appearance set to class colored")
-        else
+        if toggle == nil then
             Print("usage: /inari dark on|off")
             return
         end
+        ns.SetInariAppearanceMode(toggle and "dark" or "class")
+        Print(toggle and "appearance set to dark mode" or "appearance set to class colored")
     elseif cmd == "theme" then
-        if arg == "on" or arg == "1" or arg == "true" then
-            InariDB.forceEUITheme = true
-            ns.ApplyEllesmereThemeSettings(true, true)
-            Print("EllesmereUI theme enforcement enabled")
-        elseif arg == "off" or arg == "0" or arg == "false" then
-            InariDB.forceEUITheme = false
-            Print("EllesmereUI theme enforcement disabled")
-        else
+        if toggle == nil then
             Print("usage: /inari theme on|off")
             return
         end
+        InariDB.forceEUITheme = toggle
+        if toggle then ns.ApplyEllesmereThemeSettings(true, true) end
+        Print("EllesmereUI theme enforcement " .. (toggle and "enabled" or "disabled"))
         ScheduleApply()
     elseif cmd == "idlefade" or cmd == "fade" then
-        if arg == "on" or arg == "1" or arg == "true" then
-            InariDB.fadeIdlePlayerAndCooldowns = true
-            UpdateIdleFadeController()
-            Print("idle fade enabled")
-        elseif arg == "off" or arg == "0" or arg == "false" then
-            InariDB.fadeIdlePlayerAndCooldowns = false
-            UpdateIdleFadeController()
-            Print("idle fade disabled")
-        else
+        if toggle == nil then
             Print("usage: /inari idlefade on|off")
             return
         end
+        InariDB.fadeIdlePlayerAndCooldowns = toggle
+        UpdateIdleFadeController()
+        Print("idle fade " .. (toggle and "enabled" or "disabled"))
     elseif cmd == "arrows" or cmd == "targetarrows" then
-        if arg == "on" or arg == "1" or arg == "true" then
+        local size = tonumber(arg)
+        if toggle ~= nil then
+            InariDB.targetArrows = toggle
+            Print("target arrows " .. (toggle and "enabled" or "disabled"))
+        elseif size then
+            size = math.floor(size + 0.5)
+            if size < 12 then size = 12 end
+            if size > 80 then size = 80 end
+            InariDB.targetArrowSize = size
             InariDB.targetArrows = true
-            if ns.RefreshTargetArrows then ns.RefreshTargetArrows() end
-            Print("target arrows enabled")
-        elseif arg == "off" or arg == "0" or arg == "false" then
-            InariDB.targetArrows = false
-            if ns.RefreshTargetArrows then ns.RefreshTargetArrows() end
-            Print("target arrows disabled")
+            Print("target arrow size set to " .. tostring(size))
         else
-            local size = tonumber(arg)
-            if size then
-                size = math.floor(size + 0.5)
-                if size < 12 then size = 12 end
-                if size > 80 then size = 80 end
-                InariDB.targetArrowSize = size
-                InariDB.targetArrows = true
-                if ns.RefreshTargetArrows then ns.RefreshTargetArrows() end
-                Print("target arrow size set to " .. tostring(size))
-            else
-                Print("usage: /inari arrows on|off|30")
-                return
-            end
+            Print("usage: /inari arrows on|off|30")
+            return
         end
+        if ns.RefreshTargetArrows then ns.RefreshTargetArrows() end
     elseif cmd == "paging" or cmd == "actionbarpaging" or cmd == "barpaging" then
-        if arg == "off" or arg == "0" or arg == "false" or arg == "disable" or arg == "disabled" then
-            InariDB.disableEllesmereActionBarPaging = true
-        elseif arg == "on" or arg == "1" or arg == "true" or arg == "enable" or arg == "enabled" then
-            InariDB.disableEllesmereActionBarPaging = false
-        else
+        if toggle == nil then
             Print("usage: /inari paging on|off")
             return
         end
+        InariDB.disableEllesmereActionBarPaging = not toggle
 
         local applied = ns.ApplyEllesmereActionBarPagingOverride()
         ScheduleApply()
@@ -1415,18 +1547,19 @@ SlashCmdList.INARI = function(msg)
         end
         Print(message)
     elseif cmd == "chat" then
-        if arg == "right" or arg == "on" or arg == "1" or arg == "true" then
-            InariDB.forceChatSidebarRight = true
-            ns.ApplyChatSettings()
-            Print("chat buttons set to right")
-        elseif arg == "left" or arg == "off" or arg == "0" or arg == "false" then
-            InariDB.forceChatSidebarRight = false
-            ns.ApplyChatSettings()
-            Print("chat buttons set to left")
-        else
+        local right = toggle
+        if arg == "right" then
+            right = true
+        elseif arg == "left" then
+            right = false
+        end
+        if right == nil then
             Print("usage: /inari chat right|left")
             return
         end
+        InariDB.forceChatSidebarRight = right
+        ns.ApplyChatSettings()
+        Print("chat buttons set to " .. (right and "right" or "left"))
         ScheduleApply()
     elseif cmd == "extras" or cmd == "behavior" or cmd == "portraits" or cmd == "portrait" then
         ns.ShowConfigFrame("extras")
@@ -1449,7 +1582,12 @@ SlashCmdList.INARI = function(msg)
                     return
                 end
             end
-            local ok, message = ns.ImportBothEllesmereUIProfiles and ns.ImportBothEllesmereUIProfiles() or ns.ImportEllesmereUIProfile()
+            local ok, message
+            if ns.ImportBothEllesmereUIProfiles then
+                ok, message = ns.ImportBothEllesmereUIProfiles()
+            else
+                ok, message = ns.ImportEllesmereUIProfile()
+            end
             Print(message or (ok and "EllesmereUI imported" or "EllesmereUI import failed"))
         elseif arg == "bigwigs" or arg == "bw" then
             local ok, message = ns.ImportBigWigsProfile(function(accepted)
@@ -1482,40 +1620,21 @@ SlashCmdList.INARI = function(msg)
         if ok then
             Print("reload UI to finish applying loaded profiles")
         end
-    elseif cmd == "dmpos" or cmd == "damagepos" or cmd == "meterpos" then
-        PrintDamageMeterPositions()
     elseif cmd == "cvars" then
-        local applied, skipped = ApplyCVarTable(BASE_CVARS)
-        local message = "set CVars: " .. applied .. " applied"
-        if skipped > 0 then message = message .. ", " .. skipped .. " skipped" end
-        Print(message)
+        PrintCVarResult("base CVars set: ", ApplyCVarTable(BASE_CVARS))
     elseif cmd == "fct" or cmd == "combattext" then
-        local value
-        if arg == "on" or arg == "1" or arg == "true" or arg == "enable" then
-            value = 1
-        elseif arg == "off" or arg == "0" or arg == "false" or arg == "disable" then
-            value = 0
-        else
+        if toggle == nil then
             Print("usage: /inari fct on|off")
             return
         end
-        local applied, skipped = ApplyFloatingCombatText(value)
-        local message = "floating combat text " .. (value == 1 and "enabled" or "disabled") .. ": " .. applied .. " CVars"
-        if skipped > 0 then message = message .. ", " .. skipped .. " skipped" end
-        Print(message)
+        PrintCVarResult("floating combat text " .. (toggle and "enabled" or "disabled") .. ": ",
+            ApplyFloatingCombatText(toggle and 1 or 0))
     elseif cmd == "fps" or cmd == "graphics" then
         if cmd == "graphics" and (arg == "inari" or arg == "inaris" or arg == "inari's") then
-            local applied, skipped = ApplyInariGraphicsSettings()
-            local message = "Inari's graphics applied: " .. applied .. " CVars"
-            if skipped > 0 then message = message .. ", " .. skipped .. " skipped" end
-            Print(message)
+            PrintCVarResult("Inari's graphics applied: ", ApplyInariGraphicsSettings())
             return
         end
-
-        local applied, skipped = ApplyFPSSettings()
-        local message = "FPS settings applied: " .. applied .. " CVars"
-        if skipped > 0 then message = message .. ", " .. skipped .. " skipped" end
-        Print(message)
+        PrintCVarResult("FPS settings applied: ", ApplyFPSSettings())
     elseif cmd == "tint" then
         local value = tonumber(arg)
         if not value then
@@ -1537,6 +1656,7 @@ SlashCmdList.INARI = function(msg)
         value = math.floor(value + 0.5)
         if value < 0 then value = 0 end
         if value > 100 then value = 100 end
+        value = NormalizeHealthOpacity(value)
         InariDB.healthBarOpacity = value
         InariDB.forceOpacity = true
         if ns.SetAllHealthOpacity(value) then
@@ -1547,28 +1667,32 @@ SlashCmdList.INARI = function(msg)
             Print("Ellesmere unit frame profiles were not ready")
         end
     elseif cmd == "shadows" or cmd == "shadow" or cmd == "frameshadows" then
-        if arg == "on" or arg == "1" or arg == "true" then
+        local strength = tonumber(arg)
+        if toggle ~= nil then
+            InariDB.frameShadows = toggle
+            Print("frame shadows " .. (toggle and "enabled" or "disabled"))
+        elseif strength then
+            if strength < 0 then strength = 0 end
+            if strength > 100 then strength = 100 end
             InariDB.frameShadows = true
-            Print("frame shadows enabled")
-        elseif arg == "off" or arg == "0" or arg == "false" then
-            InariDB.frameShadows = false
-            Print("frame shadows disabled")
+            InariDB.frameShadowStrength = strength
+            Print("shadow strength set to " .. tostring(strength) .. "%")
         else
-            local strength = tonumber(arg)
-            if strength then
-                if strength < 0 then strength = 0 end
-                if strength > 100 then strength = 100 end
-                InariDB.frameShadows = true
-                InariDB.frameShadowStrength = strength
-                Print("shadow strength set to " .. tostring(strength) .. "%")
-            else
-                Print("usage: /inari shadows on|off|70")
-                return
-            end
+            Print("usage: /inari shadows on|off|70")
+            return
         end
         ScheduleApply()
+    elseif cmd == "doctor" or cmd == "check" then
+        RunDoctor()
+    elseif cmd == "reset" then
+        if arg ~= "confirm" then
+            Print("this resets inari's own settings to defaults (imported profiles are kept); type /inari reset confirm")
+            return
+        end
+        ResetSettings()
+        Print("settings reset to defaults")
     elseif cmd == "apply" or cmd == "reload" then
-        local count = ApplyAll()
+        local count = ApplyAll(true)
         ns.ApplyEllesmereThemeSettings(true, true)
         Print("patched " .. count .. " unit frame bars")
     elseif cmd == "fonts" or cmd == "media" then
@@ -1598,7 +1722,7 @@ eventFrame:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED")
 pcall(eventFrame.RegisterEvent, eventFrame, "PLAYER_CAN_GLIDE_CHANGED")
 pcall(eventFrame.RegisterEvent, eventFrame, "PLAYER_IS_GLIDING_CHANGED")
 pcall(eventFrame.RegisterEvent, eventFrame, "PLAYER_DIFFICULTY_CHANGED")
-pcall(eventFrame.RegisterEvent, eventFrame, "PLAYER_SPECIALIZATION_CHANGED")
+pcall(eventFrame.RegisterUnitEvent, eventFrame, "PLAYER_SPECIALIZATION_CHANGED", "player")
 pcall(eventFrame.RegisterEvent, eventFrame, "ACTIVE_TALENT_GROUP_CHANGED")
 pcall(eventFrame.RegisterEvent, eventFrame, "TRAIT_CONFIG_UPDATED")
 local RELATED_ADDONS = {
@@ -1657,6 +1781,10 @@ local ELLESMERE_RUNTIME_ADDONS = {
 eventFrame:SetScript("OnEvent", function(_, event, addonName, ...)
     if event == "ADDON_LOADED" then
         if addonName == ADDON_NAME then
+            -- Keeps EllesmereUI's own first-install picker quiet; inari owns the setup.
+            if EllesmereUI and type(EllesmereUI.RegisterExternalInstaller) == "function" then
+                pcall(EllesmereUI.RegisterExternalInstaller, "inari")
+            end
             Bootstrap(true, true)
             return
         end
@@ -1716,13 +1844,16 @@ eventFrame:SetScript("OnEvent", function(_, event, addonName, ...)
 
     if event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" or event == "ZONE_CHANGED_NEW_AREA" or event == "PLAYER_DIFFICULTY_CHANGED"
         or event == "PLAYER_MOUNT_DISPLAY_CHANGED" or event == "PLAYER_CAN_GLIDE_CHANGED" or event == "PLAYER_IS_GLIDING_CHANGED" then
-        ApplyIdleFadeState()
+        -- InCombatLockdown() is still false while PLAYER_REGEN_DISABLED fires.
+        ApplyIdleFadeState(event == "PLAYER_REGEN_DISABLED")
         return
     end
 
     if event == "PLAYER_SPECIALIZATION_CHANGED" or event == "ACTIVE_TALENT_GROUP_CHANGED" or event == "TRAIT_CONFIG_UPDATED" then
         ns.ApplyEllesmereThemeSettings(true)
-        ns.ApplyEllesmereActionBarPagingOverride()
+        if type(InariDB) == "table" and InariDB.enabled then
+            ns.ApplyEllesmereActionBarPagingOverride()
+        end
         ScheduleSpecApplyBurst()
         return
     end
@@ -1758,8 +1889,11 @@ ns.GetLayoutAspect = GetLayoutAspect
 ns.SetLayoutAspect = SetLayoutAspect
 ns.GetLayoutAspectLabel = GetLayoutAspectLabel
 ns.GetEllesmereLayoutProfileName = GetEllesmereLayoutProfileName
+ns.IsInariEllesmereProfile = IsInariEllesmereProfile
+ns.IsInariEllesmereProfileActive = IsInariEllesmereProfileActive
+ns.EllesmereProfileExists = EllesmereProfileExists
+ns.GetActiveEllesmereProfile = GetActiveEllesmereProfile
 ns.TryLoadAddon = TryLoadAddon
-ns.CopyPlainTable = CopyPlainTable
 ns.GetInariCVar = GetInariCVar
 ns.SetInariCVar = SetInariCVar
 ns.ApplyCVarTable = ApplyCVarTable
@@ -1791,3 +1925,7 @@ ns.EnsureEllesmereAddonProfile = EnsureEllesmereAddonProfile
 
 ns.UnitKey = UnitKey
 ns.LegacyMiniUnitKey = LegacyMiniUnitKey
+ns.RunAfterCombat = RunAfterCombat
+ns.FormatCVarResult = FormatCVarResult
+ns.NormalizeHealthOpacity = NormalizeHealthOpacity
+ns.ResetSettings = ResetSettings

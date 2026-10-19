@@ -28,7 +28,7 @@ Setup and downloads live on **[inari.ink](https://inari.ink)**. This repo is the
 
 ## Install
 
-**1.0.5 is a full reinstall.** Delete the previous copy of this addon from `Interface\AddOns` and reimport the WowUp string. Settings do not carry over.
+**Coming from a version before 1.0.5?** That update is a full reinstall. Delete the previous copy of this addon from `Interface\AddOns` and reimport the WowUp string. Settings do not carry over.
 
 1. In [WowUp](https://wowup.io/), open **My Addons → Import** and paste the string from [inari.ink/install](https://inari.ink/install).
 2. Restart World of Warcraft and log in. The installer opens, picks 16:9 or 21:9 from your monitor, and imports both layouts.
@@ -60,4 +60,6 @@ Required: **EllesmereUI** and **inari**. Optional, but what the installer styles
 | `/inari layout 16` / `21` | Switch the active EllesmereUI layout |
 | `/inari appearance dark` / `class` | Frame coloring |
 | `/inari shadows on` / `off` | Frame shadows |
+| `/inari doctor` | Check that this EllesmereUI version has everything inari hooks into |
+| `/inari reset confirm` | Reset inari's own settings to defaults |
 | `/inari help` | Full command list |

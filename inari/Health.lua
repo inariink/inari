@@ -155,6 +155,7 @@ end
 local function ApplyConfiguredProfileSettings()
     local profile = GetEllesmereProfile()
     local appearanceMode = GetAppearanceMode()
+    if not InariDB.enabled or not ns.IsInariEllesmereProfileActive() then return false end
     local classColored = appearanceMode == "class"
 
     local changed = false
@@ -211,15 +212,32 @@ local function ApplyConfiguredProfileSettings()
     return changed
 end
 
+-- Rebuilt only after ApplyAll or a mode change; the raid hooks read it per color update.
+local appearanceToken, raidAppearanceToken, partyAppearanceToken
+
+local function InvalidateAppearanceToken()
+    appearanceToken = nil
+end
+
 local function AppearanceToken()
-    return table.concat({
-        tostring(InariDB.appearanceMode),
-        tostring(InariDB.classBackground),
-        tostring(InariDB.tint),
-        tostring(InariDB.healthBarOpacity),
-        tostring(InariDB.darkOpacity),
-        tostring(InariDB.enabled),
-    }, ":")
+    if not appearanceToken then
+        appearanceToken = table.concat({
+            tostring(InariDB.appearanceMode),
+            tostring(InariDB.classBackground),
+            tostring(InariDB.tint),
+            tostring(InariDB.healthBarOpacity),
+            tostring(InariDB.darkOpacity),
+            tostring(InariDB.enabled),
+        }, ":")
+        raidAppearanceToken = appearanceToken .. ":false"
+        partyAppearanceToken = appearanceToken .. ":true"
+    end
+    return appearanceToken
+end
+
+local function RaidAppearanceToken(isParty)
+    AppearanceToken()
+    return isParty and partyAppearanceToken or raidAppearanceToken
 end
 
 local function ClearBackgroundTintCache(bg)
@@ -248,12 +266,13 @@ local function SetInariAppearanceMode(mode)
     InariDB.appearanceMode = mode
     InariDB.forceDarkMode = mode == "dark"
     InariDB.classBackground = mode == "dark"
+    InvalidateAppearanceToken()
 
     ApplyConfiguredProfileSettings()
     State.discoveredFramesCached = false
     State.framesPatched = false
 
-    for unit, frameName in pairs(FRAME_NAMES) do
+    for _, frameName in pairs(FRAME_NAMES) do
         local frame = _G[frameName]
         UnwrapHealthAppearance(frame and frame.Health)
     end
@@ -588,7 +607,7 @@ local ApplyRaidFrameHealthPatch
 ApplyRaidFrameHealthPatch = function(button, health, bg, unit, isParty)
     if not InariDB.enabled or not health then return end
 
-    local token = AppearanceToken() .. ":" .. tostring(isParty)
+    local token = RaidAppearanceToken(isParty)
     local same = health._inariRaidToken == token and health._inariRaidUnit == unit
     if not same then
         health._inariRaidToken = token
@@ -806,3 +825,4 @@ ns.GetAppearanceMode = GetAppearanceMode
 ns.SetInariAppearanceMode = SetInariAppearanceMode
 ns.ApplyConfiguredProfileSettings = ApplyConfiguredProfileSettings
 ns.SetAllHealthOpacity = SetAllHealthOpacity
+ns.InvalidateAppearanceToken = InvalidateAppearanceToken

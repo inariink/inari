@@ -11,10 +11,36 @@ permissions:
 jobs:
   package:
     runs-on: ubuntu-latest
+    env:
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Luacheck
+        uses: lunarmodules/luacheck@v1
+        with:
+          args: inari
+
+      - name: Check version and changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          toc_version="$(sed -n 's/^## Version:[[:space:]]*//p' inari/inari.toc | tr -d '\r')"
+          if [ "$toc_version" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the TOC version $toc_version"
+            exit 1
+          fi
+          awk -v heading="## inari $version" '
+            { sub(/\r$/, "") }
+            $0 == heading { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' inari/CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "::error::inari/CHANGELOG.md has no entry for $version"
+            exit 1
+          fi
 
       - name: Package addon
         run: |
@@ -29,4 +55,35 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: package/inari.zip
-          generate_release_notes: true
+          body_path: release-notes.md
+
+      # Runs only when the CF_API_TOKEN repository secret is set. A failed upload
+      # does not fail the release; the GitHub release above is already published.
+      - name: Upload to CurseForge
+        if: env.CF_API_TOKEN != ''
+        continue-on-error: true
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          project_id="$(sed -n 's/^## X-Curse-Project-ID:[[:space:]]*//p' inari/inari.toc | tr -d '\r')"
+
+          # TOC interface numbers (120001) to CurseForge version names (12.0.1).
+          names="$(sed -n 's/^## Interface:[[:space:]]*//p' inari/inari.toc | tr -d '\r' | tr ',' '\n' \
+            | awk '{ n = $1 + 0; printf "%d.%d.%d\n", int(n / 10000), int(n / 100) % 100, n % 100 }' \
+            | jq -R . | jq -s .)"
+          game_versions="$(curl -fsS -H "X-Api-Token: $CF_API_TOKEN" https://wow.curseforge.com/api/game/versions \
+            | jq -c --argjson names "$names" '[.[] | select(.name as $n | $names | index($n)) | .id]')"
+          if [ "$game_versions" = "[]" ]; then
+            echo "::error::No CurseForge game versions matched the TOC interface list"
+            exit 1
+          fi
+
+          metadata="$(jq -n \
+            --arg name "inari $version" \
+            --rawfile changelog release-notes.md \
+            --argjson versions "$game_versions" \
+            '{ displayName: $name, changelog: $changelog, changelogType: "markdown", releaseType: "release", gameVersions: $versions }')"
+          curl -fsS \
+            -H "X-Api-Token: $CF_API_TOKEN" \
+            -F "metadata=$metadata" \
+            -F "file=@package/inari.zip" \
+            "https://wow.curseforge.com/api/projects/$project_id/upload-file"

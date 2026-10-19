@@ -87,6 +87,7 @@ function ns.BuildInstallerPage(configFrame, ui)
             copy = "Imports Cooldown Manager layouts for your current class. Existing inari layouts are replaced.",
             action = "IMPORT CDM",
             skippable = true,
+            retailOnly = true,
             run = ns.ImportInariCooldownLayouts,
         },
         {
@@ -132,7 +133,9 @@ function ns.BuildInstallerPage(configFrame, ui)
             copy = "Apply the 0.5333 UI scale, mark the install complete, and reload one final time.",
             action = "APPLY SCALE",
             run = function()
-                ns.ApplyInariUIScale(false)
+                if not InariDB.keepUIScale then
+                    ns.ApplyInariUIScale(false)
+                end
                 ns.MarkInstallerCompleted()
                 ns.MarkProfilePromptApplied()
                 ReloadUI()
@@ -142,6 +145,7 @@ function ns.BuildInstallerPage(configFrame, ui)
     }
 
     local function StepAvailable(step)
+        if step.retailOnly and ns.IS_FOREVER then return false end
         return AddonPresent(step.addon)
     end
 
@@ -190,6 +194,10 @@ function ns.BuildInstallerPage(configFrame, ui)
     welcome.notNow:SetSize(140, 36)
     welcome.notNow:SetPoint("LEFT")
     welcome.notNow:SetOnClick(function()
+        -- Stops the installer reopening on its own; it stays available from Setup.
+        if not (ns.IsInstallerComplete and ns.IsInstallerComplete()) then
+            InariDB.installerDeferred = true
+        end
         configFrame.SelectPage("overview")
     end)
 
@@ -636,13 +644,27 @@ function ns.ShowProfileUpdatePrompt()
     local labelList = ns.FormatProfileLabelList(outdated)
     local copyText
     if #outdated == 1 then
-        copyText = labelList .. " has been updated.\n\nReimport it to get the latest version?"
+        copyText = labelList .. " has been updated.\n\nReimport it to get the latest version? This replaces the inari profile, including any changes you made to it."
     else
-        copyText = labelList .. " have been updated.\n\nReimport them to get the latest versions?"
+        copyText = labelList .. " have been updated.\n\nReimport them to get the latest versions? This replaces the inari profiles, including any changes you made to them."
+    end
+
+    local hasEllesmere = false
+    local notes = {}
+    for _, def in ipairs(outdated) do
+        if def.key == "ellesmereui" then hasEllesmere = true end
+        local note = ns.GetProfileUpdateNote(def.key)
+        if note then notes[#notes + 1] = def.label .. ": " .. note end
+    end
+    if hasEllesmere then
+        copyText = copyText .. " Your current EllesmereUI layouts are kept as \"backup\" profiles."
+    end
+    if #notes > 0 then
+        copyText = copyText .. "\n\n" .. table.concat(notes, "\n")
     end
 
     if not State.profileUpdatePromptFrame then
-        local frame = ui:CreateDialog("InariProfileUpdatePromptFrame", 520, 340, "profiles")
+        local frame = ui:CreateDialog("InariProfileUpdatePromptFrame", 520, 400, "profiles")
         frame:SetHeading("Profiles updated")
         frame.primaryButton:SetLabel("Reimport & Reload")
         frame.secondaryButton:SetLabel("Not Now")
@@ -656,6 +678,7 @@ function ns.ShowProfileUpdatePrompt()
 
     local function Dismiss()
         State.profileUpdatePromptDismissedThisSession = true
+        ns.DismissProfileUpdates(frame._outdatedProfiles)
         frame:Hide()
     end
 

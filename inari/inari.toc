@@ -1,12 +1,14 @@
-## Interface: 120000, 120001, 120005, 120007, 120100
+## Interface: 120000, 120001, 120005, 120007, 120100, 16001
 ## Title: inari
 ## Notes: Modern configuration, profile imports and quality-of-life tools for inari.
 ## IconTexture: Interface\AddOns\inari\Media\logo.png
 ## Author: inari
 ## Version: 1.0.6
 ## Dependencies: EllesmereUI, EllesmereUIUnitFrames
-## OptionalDeps: EllesmereUIChat, EllesmereUIBlizzardSkin, EllesmereUIDamageMeters, EllesmereUIRaidFrames, BigWigs, EXBoss, sArena_Reloaded, Baganator
+## OptionalDeps: EllesmereUIChat, EllesmereUIBlizzardSkin, EllesmereUIDamageMeters, EllesmereUIRaidFrames, EllesmereUINameplates, EllesmereUICooldownManager, EllesmereUIResourceBars, EllesmereUIActionBars, BigWigs, EXBoss, sArena_Reloaded, Baganator
 ## SavedVariables: InariDB
+## X-Curse-Project-ID: 1469365
+## AddonCompartmentFunc: Inari_OnAddonCompartmentClick
 
 CooldownLayouts.lua
 ProfileStrings.lua

@@ -45,6 +45,9 @@ local function NormalizePage(page)
 end
 
 local function CooldownVersionStatus()
+    if ns.IS_FOREVER then
+        return "Retail only", "muted"
+    end
     local info = ns.GetCooldownLayoutVersionInfo and ns.GetCooldownLayoutVersionInfo()
     if not info then
         return "Not imported", "warn"
@@ -57,6 +60,9 @@ local function CooldownVersionStatus()
         return text, "ok"
     end
     if info.hasLayouts then
+        if info.outdated then
+            return "Outdated", "warn"
+        end
         return "Imported", "ok"
     end
     return "Not imported", "warn"
@@ -104,6 +110,59 @@ local function PresetMatches(cvars)
     return true
 end
 
+-- Stored preset if valid, otherwise whichever preset the live CVars match.
+local function CurrentCombatTextPreset()
+    local preset = InariDB.floatingCombatTextPreset
+    if preset == "disabled" or preset == "enabled" then return preset end
+    if CombatTextMatches(0) then return "disabled" end
+    if CombatTextMatches(1) then return "enabled" end
+    return nil
+end
+
+local function CurrentGraphicsPreset()
+    local preset = InariDB.graphicsPreset
+    if preset == "inari" or preset == "fps" then return preset end
+    if PresetMatches(ns.INARI_GRAPHICS_CVARS) then return "inari" end
+    if PresetMatches(ns.FPS_CVARS) then return "fps" end
+    return nil
+end
+
+-- A held stepper would otherwise rebuild every Ellesmere frame per click.
+local opacityReloadTimer
+local function QueueOpacityReload()
+    if opacityReloadTimer then opacityReloadTimer:Cancel() end
+    opacityReloadTimer = C_Timer.NewTimer(0.3, function()
+        opacityReloadTimer = nil
+        ns.ScheduleApply()
+        ns.ReloadEllesmereFrames()
+    end)
+end
+
+local function ShowResetPrompt(onReset)
+    local State = ns.State
+    if not State.resetPromptFrame then
+        local frame = UI():CreateDialog("InariResetPromptFrame", 500, 300, "setup")
+        frame:SetHeading("Reset inari settings")
+        frame:SetCopy("Sets inari's own options back to their defaults. Imported profiles and the install state are kept.")
+        frame.primaryButton:SetLabel("Reset")
+        frame.secondaryButton:SetLabel("Cancel")
+        local function Close()
+            frame:Hide()
+        end
+        frame:SetOnClose(Close)
+        frame.secondaryButton:SetOnClick(Close)
+        State.resetPromptFrame = frame
+    end
+
+    local frame = State.resetPromptFrame
+    frame.primaryButton:SetOnClick(function()
+        ns.ResetSettings()
+        frame:Hide()
+        if onReset then onReset() end
+    end)
+    frame:Show()
+end
+
 local function BuildAppearance(frame, ui)
     local page = ui:CreatePage(frame.content, "Appearance", "How inari colors unit frames. Class resource and power bars stay colored.")
 
@@ -127,7 +186,7 @@ local function BuildAppearance(frame, ui)
             label = "Reapply",
             width = 150,
             onClick = function()
-                ns.ScheduleApply()
+                ns.ScheduleApply(0, true)
                 page:SetMuted("Settings queued.")
                 Print("runtime settings queued")
             end,
@@ -156,12 +215,17 @@ local function BuildAppearance(frame, ui)
         page:SetMuted(message)
         Print(message)
     end)
-    local opacityRow = mode:AddStepperRow("Health opacity", InariDB.healthBarOpacity or 85, 0, 100, 1, function(_, value)
+    local opacityRow
+    opacityRow = mode:AddStepperRow("Health opacity", InariDB.healthBarOpacity or 85, 0, 100, 1, function(_, value)
+        local normalized = ns.NormalizeHealthOpacity(value, InariDB.healthBarOpacity)
+        if normalized ~= value then
+            value = normalized
+            opacityRow:SetValue(value, true)
+        end
         InariDB.healthBarOpacity = value
         InariDB.forceOpacity = true
         if ns.SetAllHealthOpacity(value) then
-            ns.ScheduleApply()
-            ns.ReloadEllesmereFrames()
+            QueueOpacityReload()
             local message = "health opacity set to " .. tostring(value) .. "%"
             page:SetMuted(message)
             Print(message)
@@ -454,6 +518,13 @@ local function BuildSetup(frame, ui)
     local scale = page:AddSection("UI Scale")
     local expectedRow = scale:AddInfoRow("Expected", FormatScale(ns.UI_SCALE or 0.5333333333))
     local currentRow = scale:AddInfoRow("Current", "—")
+    local keepScaleToggle = scale:AddToggle("Keep my own UI scale", InariDB.keepUIScale == true, function(_, checked)
+        InariDB.keepUIScale = checked or nil
+        local message = checked and "inari will leave your UI scale alone" or "inari expects its own UI scale again"
+        page:SetMuted(message)
+        Print(message)
+        if page.Refresh then page:Refresh() end
+    end)
     scale:AddButtonRow({
         {
             label = "Apply UI Scale",
@@ -473,9 +544,7 @@ local function BuildSetup(frame, ui)
             label = "Set Base CVars",
             width = 170,
             onClick = function()
-                local applied, skipped = ns.ApplyCVarTable(ns.BASE_CVARS)
-                local message = "set CVars: " .. applied .. " applied"
-                if skipped > 0 then message = message .. ", " .. skipped .. " skipped" end
+                local message = ns.FormatCVarResult("base CVars set: ", ns.ApplyCVarTable(ns.BASE_CVARS))
                 page:SetMuted(message)
                 Print(message)
             end,
@@ -483,50 +552,51 @@ local function BuildSetup(frame, ui)
     })
 
     local combatText = page:AddSection("Floating combat text")
-    local fctPreset = InariDB.floatingCombatTextPreset
-    if fctPreset ~= "disabled" and fctPreset ~= "enabled" then
-        if CombatTextMatches(0) then fctPreset = "disabled"
-        elseif CombatTextMatches(1) then fctPreset = "enabled"
-        else fctPreset = nil end
-    end
+    local fctPreset = CurrentCombatTextPreset()
     local fctControl = combatText:AddSegmented({
         { label = "Disable", value = "disabled", width = 170 },
         { label = "Enable", value = "enabled", width = 170 },
     }, fctPreset, function(_, preset)
-        local applied, skipped = ns.ApplyFloatingCombatText(preset == "enabled" and 1 or 0)
-        local message = "floating combat text " .. preset .. ": " .. applied .. " CVars"
-        if skipped > 0 then message = message .. ", " .. skipped .. " skipped" end
+        local message = ns.FormatCVarResult("floating combat text " .. preset .. ": ",
+            ns.ApplyFloatingCombatText(preset == "enabled" and 1 or 0))
         page:SetMuted(message)
         Print(message)
     end)
 
     local graphics = page:AddSection("Graphics")
     graphics:AddText("Graphics presets apply immediately and overwrite the matching client CVars.", 12, "muted", 36)
-    local gfxPreset = InariDB.graphicsPreset
-    if gfxPreset ~= "inari" and gfxPreset ~= "fps" then
-        if PresetMatches(ns.INARI_GRAPHICS_CVARS) then gfxPreset = "inari"
-        elseif PresetMatches(ns.FPS_CVARS) then gfxPreset = "fps"
-        else gfxPreset = nil end
-    end
+    local gfxPreset = CurrentGraphicsPreset()
     local gfxControl = graphics:AddSegmented({
         { label = "FPS Settings", value = "fps", width = 170 },
         { label = "Inari Graphics", value = "inari", width = 170 },
     }, gfxPreset, function(_, preset)
-        local applied, skipped
         local message
         if preset == "inari" then
-            applied, skipped = ns.ApplyInariGraphicsSettings()
-            message = "Inari's graphics applied: " .. applied .. " CVars"
+            message = ns.FormatCVarResult("Inari's graphics applied: ", ns.ApplyInariGraphicsSettings())
         else
-            applied, skipped = ns.ApplyFPSSettings()
-            message = "FPS preset applied: " .. applied .. " CVars"
+            message = ns.FormatCVarResult("FPS preset applied: ", ns.ApplyFPSSettings())
         end
-        if skipped > 0 then message = message .. ", " .. skipped .. " skipped" end
         page:SetMuted(message)
         Print(message)
     end)
 
+    local reset = page:AddSection("Reset")
+    reset:AddButtonRow({
+        {
+            label = "Reset Settings",
+            width = 170,
+            onClick = function()
+                ShowResetPrompt(function()
+                    page:SetMuted("Settings reset to defaults.")
+                    Print("settings reset to defaults")
+                    if page.Refresh then page:Refresh() end
+                end)
+            end,
+        },
+    })
+
     function page:Refresh()
+        keepScaleToggle:SetChecked(InariDB.keepUIScale == true)
         if InariDB.installerPendingFinalScale then
             installerRow.value:SetText("pending final scale")
             ui:SetStatusColor(installerRow.value, false)
@@ -541,21 +611,11 @@ local function BuildSetup(frame, ui)
         local ok, expected, current = UIScaleIsCorrect()
         expectedRow.value:SetText(FormatScale(expected))
         currentRow.value:SetText(current and FormatScale(current) or "unknown")
-        ui:SetStatusColor(currentRow.value, ok)
+        ui:SetStatusColor(currentRow.value, ok or InariDB.keepUIScale == true)
 
-        local nextFct = InariDB.floatingCombatTextPreset
-        if nextFct ~= "disabled" and nextFct ~= "enabled" then
-            if CombatTextMatches(0) then nextFct = "disabled"
-            elseif CombatTextMatches(1) then nextFct = "enabled"
-            else nextFct = nil end
-        end
+        local nextFct = CurrentCombatTextPreset()
         if nextFct then fctControl:SetValue(nextFct, true) end
-        local nextGfx = InariDB.graphicsPreset
-        if nextGfx ~= "inari" and nextGfx ~= "fps" then
-            if PresetMatches(ns.INARI_GRAPHICS_CVARS) then nextGfx = "inari"
-            elseif PresetMatches(ns.FPS_CVARS) then nextGfx = "fps"
-            else nextGfx = nil end
-        end
+        local nextGfx = CurrentGraphicsPreset()
         if nextGfx then gfxControl:SetValue(nextGfx, true) end
     end
 
@@ -580,9 +640,7 @@ local function ReimportEllesmereLayout(host, aspect, forceImport)
     end
 
     local ok, message
-    local alreadyInstalled = type(EllesmereUIDB) == "table"
-        and type(EllesmereUIDB.profiles) == "table"
-        and type(EllesmereUIDB.profiles[profileName]) == "table"
+    local alreadyInstalled = ns.EllesmereProfileExists(profileName)
     if forceImport or not alreadyInstalled then
         ok, message = ns.ImportEllesmereUIProfile()
         message = message or (ok and ("EllesmereUI " .. label .. " imported as " .. profileName) or "EllesmereUI import failed")
@@ -764,14 +822,18 @@ local function BuildOverview(frame, ui)
         local cooldownStatus, cooldownKind = CooldownVersionStatus()
         cooldownsCard:SetStatus(cooldownStatus, cooldownKind)
         cooldownsCard:SetAttention(cooldownKind == "warn")
-        local cooldownAction = cooldownKind == "warn" and cooldownStatus ~= "Not imported" and "UPDATE LAYOUTS" or "IMPORT LAYOUTS"
-        cooldownsCard:SetAction(cooldownAction, cooldownKind == "warn" and "primary" or "ghost", function()
-            local ok, message = ns.ImportInariCooldownLayouts()
-            Print(message or (ok and "cooldown layouts imported" or "cooldown import failed"))
-            overview:Refresh()
-        end)
+        if ns.IS_FOREVER then
+            cooldownsCard:SetAction(nil)
+        else
+            local cooldownAction = cooldownKind == "warn" and cooldownStatus ~= "Not imported" and "UPDATE LAYOUTS" or "IMPORT LAYOUTS"
+            cooldownsCard:SetAction(cooldownAction, cooldownKind == "warn" and "primary" or "ghost", function()
+                local ok, message = ns.ImportInariCooldownLayouts()
+                Print(message or (ok and "cooldown layouts imported" or "cooldown import failed"))
+                overview:Refresh()
+            end)
+        end
 
-        local scaleOk = UIScaleIsCorrect()
+        local scaleOk = UIScaleIsCorrect() or InariDB.keepUIScale == true
         if InariDB.installerPendingFinalScale then
             setupCard:SetStatus("Pending final scale", "warn")
             setupCard:SetAttention(true)
@@ -889,7 +951,6 @@ function ns.ShowConfigFrame(initialTab)
         end)
 
         State.configFrame = frame
-        State.cooldownImportFrame = frame
     end
 
     local selected
@@ -904,5 +965,3 @@ function ns.ShowConfigFrame(initialTab)
     State.configFrame.SelectPage(selected)
     State.configFrame:Show()
 end
-
-ns.ShowCooldownImportFrame = ns.ShowConfigFrame

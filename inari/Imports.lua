@@ -1,8 +1,6 @@
 local ADDON_NAME, ns = ...
 local TryLoadAddon = ns.TryLoadAddon
-local CopyPlainTable = ns.CopyPlainTable
 local EnsureDB = ns.EnsureDB
-local Print = ns.Print
 local CONST = ns.CONST
 local State = ns.State
 local EXBOSS_IMPORT_SLOT_KEYS = ns.EXBOSS_IMPORT_SLOT_KEYS
@@ -11,19 +9,12 @@ local GetInariCharacterKey = ns.GetInariCharacterKey
 local GetBundledProfileVersion
 local MarkImportedProfileVersion
 local ActivateEllesmereLayoutProfile
-local EllesmereProfileExists
-local GetActiveEllesmereProfile
+local EllesmereProfileExists = ns.EllesmereProfileExists
+local GetActiveEllesmereProfile = ns.GetActiveEllesmereProfile
+local IsInariEllesmereProfile = ns.IsInariEllesmereProfile
+local GetEllesmereLayoutProfileName = ns.GetEllesmereLayoutProfileName
 local ImportInariCooldownLayouts
 local HasInariCooldownLayouts
-
-local function GetEllesmereLayoutProfileName(aspect)
-    aspect = aspect or (ns.GetLayoutAspect and ns.GetLayoutAspect()) or "16"
-    return aspect == "21" and "inari21:9" or "inari16:9"
-end
-
-local function IsInariEllesmereProfile(name)
-    return name == "inari" or name == "inari16:9" or name == "inari21:9"
-end
 
 -- Regular Ellesmere exports merge onto the active profile. Leave an inari16:9
 -- / inari21:9 profile before importing the other layout, or the two mix.
@@ -35,59 +26,6 @@ local function SwitchAwayFromOtherInariEllesmereProfile(profileName)
     if EllesmereProfileExists and EllesmereProfileExists("Default") then
         pcall(EllesmereUI.SwitchProfile, "Default")
     end
-end
-
-local function RemapEllesmereFullAccountProfileToInari(payload, profileName)
-    profileName = profileName or GetEllesmereLayoutProfileName()
-    local data = payload and payload.data
-    if type(data) ~= "table" then
-        return false, "EllesmereUI full-account payload is missing data"
-    end
-
-    local oldName = data.activeProfile or payload.profileName or "Default"
-    data.profiles = data.profiles or {}
-
-    if oldName ~= profileName then
-        if type(data.profiles[oldName]) == "table" then
-            data.profiles[profileName] = data.profiles[oldName]
-            data.profiles[oldName] = nil
-        elseif type(data.profiles[profileName]) ~= "table" then
-            for name, pdata in pairs(data.profiles) do
-                data.profiles[profileName] = pdata
-                if name ~= profileName then
-                    data.profiles[name] = nil
-                end
-                oldName = name
-                break
-            end
-        end
-
-        if type(data.specProfiles) == "table" then
-            for specID, assigned in pairs(data.specProfiles) do
-                if assigned == oldName then
-                    data.specProfiles[specID] = profileName
-                end
-            end
-        end
-
-        if data.colorsPullFrom == oldName then
-            data.colorsPullFrom = profileName
-        end
-
-        if type(data.syncedModules) == "table" then
-            for _, targets in pairs(data.syncedModules) do
-                if type(targets) == "table" and targets[oldName] ~= nil then
-                    targets[profileName] = targets[oldName]
-                    targets[oldName] = nil
-                end
-            end
-        end
-    end
-
-    data.activeProfile = profileName
-    data.profileOrder = { profileName }
-    payload.profileName = profileName
-    return true
 end
 
 -- Ellesmere exports the full override store. If a spec was removed from a group
@@ -175,6 +113,53 @@ local function ScrubEllesmereStrandedOverridesInPayload(payload)
     end
 end
 
+-- One slot per layout: the previous copy is overwritten on the next reimport.
+local function BackupEllesmereProfile(profileName)
+    if type(CopyTable) ~= "function" or not EllesmereProfileExists(profileName) then return end
+
+    local backupName = profileName .. " backup"
+    local copy = CopyTable(EllesmereUIDB.profiles[profileName])
+    copy._importEstablishPending = nil
+    EllesmereUIDB.profiles[backupName] = copy
+
+    -- Cooldown Manager spells live outside the profile blob, keyed by profile name.
+    local store = EllesmereUIDB.spellAssignments
+    if type(store) == "table" and type(store.profiles) == "table" and type(store.profiles[profileName]) == "table" then
+        store.profiles[backupName] = CopyTable(store.profiles[profileName])
+    end
+
+    local order = EllesmereUIDB.profileOrder
+    if type(order) == "table" then
+        for _, name in ipairs(order) do
+            if name == backupName then return end
+        end
+        order[#order + 1] = backupName
+    end
+end
+
+-- Importing onto an existing profile inherits its name-keyed leftovers, so it is
+-- deleted first. DeleteProfile also drops its spec assignments; return them so the
+-- caller can hand them back after the import.
+local function DeleteEllesmereProfileForReimport(profileName)
+    local specs = {}
+    local specProfiles = type(EllesmereUIDB) == "table" and EllesmereUIDB.specProfiles
+    if type(specProfiles) == "table" then
+        for specID, assigned in pairs(specProfiles) do
+            if assigned == profileName then specs[#specs + 1] = specID end
+        end
+    end
+    pcall(EllesmereUI.DeleteProfile, profileName)
+    return specs
+end
+
+local function RestoreEllesmereSpecAssignments(profileName, specs)
+    if type(specs) ~= "table" or #specs == 0 or type(EllesmereUIDB) ~= "table" then return end
+    if type(EllesmereUIDB.specProfiles) ~= "table" then EllesmereUIDB.specProfiles = {} end
+    for _, specID in ipairs(specs) do
+        EllesmereUIDB.specProfiles[specID] = profileName
+    end
+end
+
 local function GetEllesmereUIImportString(aspect)
     local profiles = InariProfiles
     if type(profiles) ~= "table" then return nil end
@@ -223,46 +208,16 @@ local function ImportEllesmereUIProfile(aspect, opts)
         ScrubEllesmereStrandedOverridesInPayload(payload)
         if payload.data then
             payload.data.assignedSpecs = nil
+            -- Transport-only; EllesmereUI's own installer import drops it too.
+            payload.data.unlockLayoutMeta = nil
         end
 
+        -- Bundled strings are regular profile exports. A full-account string would
+        -- replace account-wide EllesmereUI settings and force a reload.
         if type(EllesmereUI.IsFullAccountPayload) == "function"
             and EllesmereUI.IsFullAccountPayload(payload)
         then
-            if type(EllesmereUI.ImportFullAccountData) ~= "function" then
-                return false, "EllesmereUI full-account import API is not available"
-            end
-
-            local remapOk, remapErr = RemapEllesmereFullAccountProfileToInari(payload, profileName)
-            if not remapOk then
-                return false, tostring(remapErr)
-            end
-
-            ScrubEllesmereStrandedOverridesInPayload(payload)
-            if activate then
-                MarkImportedProfileVersion("ellesmereui")
-            end
-
-            local realReloadUI = _G.ReloadUI
-            _G.ReloadUI = function() end
-            local ok, success = pcall(EllesmereUI.ImportFullAccountData, payload)
-            _G.ReloadUI = realReloadUI
-
-            if not ok then
-                return false, tostring(success)
-            end
-            if not success then
-                return false, "EllesmereUI full-account import failed"
-            end
-
-            if not activate then
-                return true, "EllesmereUI " .. label .. " full-account profile stored as " .. profileName
-            end
-
-            local activated, activateErr = ActivateEllesmereLayoutProfile(profileName)
-            if not activated then
-                return false, tostring(activateErr or "EllesmereUI full-account profile was imported but not activated")
-            end
-            return true, "EllesmereUI " .. label .. " full-account profile imported as " .. profileName
+            return false, "EllesmereUI full-account strings are not supported"
         end
 
         if type(EllesmereUI.ImportProfile) ~= "function" then
@@ -271,11 +226,10 @@ local function ImportEllesmereUIProfile(aspect, opts)
 
         SwitchAwayFromOtherInariEllesmereProfile(profileName)
 
-        if EllesmereProfileExists and EllesmereProfileExists(profileName)
-            and GetActiveEllesmereProfile and GetActiveEllesmereProfile() ~= profileName
-            and type(EllesmereUI.DeleteProfile) == "function"
-        then
-            pcall(EllesmereUI.DeleteProfile, profileName)
+        local keptSpecs
+        if EllesmereProfileExists(profileName) and type(EllesmereUI.DeleteProfile) == "function" then
+            pcall(BackupEllesmereProfile, profileName)
+            keptSpecs = DeleteEllesmereProfileForReimport(profileName)
         end
 
         local ok, success, err, status = pcall(EllesmereUI.ImportProfile, payload, profileName)
@@ -285,6 +239,7 @@ local function ImportEllesmereUIProfile(aspect, opts)
         if not success then
             return false, tostring(err or "EllesmereUI import failed")
         end
+        RestoreEllesmereSpecAssignments(profileName, keptSpecs)
 
         return FinishImport(status)
     end
@@ -380,7 +335,20 @@ local function ImportEditModeLayout()
         end
     end
 
-    if #layouts.layouts >= 5 then
+    -- The limit is per layout type, and account layouts sit before character ones.
+    local accountType = Enum and Enum.EditModeLayoutType and Enum.EditModeLayoutType.Account
+    local characterType = Enum and Enum.EditModeLayoutType and Enum.EditModeLayoutType.Character
+    local maxPerType = Constants and Constants.EditModeConsts and Constants.EditModeConsts.EditModeMaxLayoutsPerType or 5
+    local accountCount = 0
+    local insertIndex = #layouts.layouts + 1
+    for i, layout in ipairs(layouts.layouts) do
+        if characterType ~= nil and layout.layoutType == characterType then
+            if i < insertIndex then insertIndex = i end
+        else
+            accountCount = accountCount + 1
+        end
+    end
+    if accountCount >= maxPerType then
         return false, "maximum Edit Mode layouts already reached"
     end
 
@@ -390,9 +358,9 @@ local function ImportEditModeLayout()
     end
 
     info.layoutName = "inari"
-    info.layoutType = Enum and Enum.EditModeLayoutType and Enum.EditModeLayoutType.Account or info.layoutType
+    info.layoutType = accountType or info.layoutType
 
-    tinsert(layouts.layouts, info)
+    tinsert(layouts.layouts, insertIndex, info)
 
     local okSave, saveErr = pcall(C_EditMode.SaveLayouts, layouts)
     if not okSave then
@@ -400,7 +368,7 @@ local function ImportEditModeLayout()
     end
 
     local presetCount = Enum and Enum.EditModePresetLayoutsMeta and Enum.EditModePresetLayoutsMeta.NumValues or 0
-    local newIndex = presetCount + #layouts.layouts
+    local newIndex = presetCount + insertIndex
     if type(C_EditMode.OnLayoutAdded) == "function" then
         pcall(C_EditMode.OnLayoutAdded, newIndex, true, true)
     end
@@ -414,55 +382,6 @@ local function ImportEditModeLayout()
 
     MarkImportedProfileVersion("editmode")
     return true, "Edit Mode layout imported as inari"
-end
-
-local function ImportBlinkiisPortraitsProfile()
-    local importString = InariProfiles and InariProfiles.blinkiiportraits
-    if type(importString) ~= "string" or importString == "" then
-        return false, "missing Blinkii's Portraits profile string"
-    end
-
-    TryLoadAddon("Blinkiis_Portraits")
-
-    if not LibStub then return false, "LibStub is not available" end
-    local LibSerialize = LibStub("LibSerialize", true)
-    local LibDeflate = LibStub("LibDeflate", true)
-    if not LibSerialize or not LibDeflate then
-        return false, "Blinkii's Portraits import libraries are not available"
-    end
-    if not BLINKIISPORTRAITS or not BLINKIISPORTRAITS.db then
-        return false, "Blinkii's Portraits profile database is not available"
-    end
-    if not importString:match("^!BP") then
-        return false, "Blinkii's Portraits import string is invalid"
-    end
-
-    local encoded = importString:gsub("^!BP", "")
-    local decoded = LibDeflate:DecodeForPrint(encoded)
-    if not decoded then return false, "Blinkii's Portraits import string could not be decoded" end
-
-    local decompressed = LibDeflate:DecompressDeflate(decoded)
-    if not decompressed then return false, "Blinkii's Portraits import string could not be decompressed" end
-
-    local ok, importDB = LibSerialize:Deserialize(decompressed)
-    if not ok or type(importDB) ~= "table" or type(importDB.profile) ~= "table" then
-        return false, "Blinkii's Portraits import string is corrupted"
-    end
-
-    BLINKIISPORTRAITS.db.profiles = BLINKIISPORTRAITS.db.profiles or {}
-    local profile = CopyPlainTable(BLINKIISPORTRAITS.defaults and BLINKIISPORTRAITS.defaults.profile or {})
-    CopyPlainTable(importDB.profile, profile)
-    BLINKIISPORTRAITS.db.profiles.inari = profile
-
-    local setOk, setErr = pcall(BLINKIISPORTRAITS.db.SetProfile, BLINKIISPORTRAITS.db, "inari")
-    if not setOk then return false, tostring(setErr) end
-
-    if type(BLINKIISPORTRAITS.LoadPortraits) == "function" then
-        pcall(BLINKIISPORTRAITS.LoadPortraits, BLINKIISPORTRAITS)
-    end
-
-    MarkImportedProfileVersion("blinkiiportraits")
-    return true, "Blinkii's Portraits profile imported as inari"
 end
 
 local function ImportEXBossProfile()
@@ -561,11 +480,27 @@ GetBundledProfileVersion = function(key)
     return 1
 end
 
+-- Cooldown Manager layouts are per class, so their imported version is too.
+local function ImportedVersionKey(key)
+    if key ~= "cdm" then return key end
+    local _, classToken = UnitClass("player")
+    return classToken and ("cdm:" .. classToken) or key
+end
+
+-- Optional one-line "what changed" for the update prompt.
+local function GetProfileUpdateNote(key)
+    local notes = InariProfiles and InariProfiles.notes
+    local note = type(notes) == "table" and notes[key]
+    if type(note) == "string" and note ~= "" then return note end
+    return nil
+end
+
 MarkImportedProfileVersion = function(key)
     if type(key) ~= "string" or key == "" then return end
     EnsureDB()
-    InariDB.importedProfileVersions[key] = GetBundledProfileVersion(key)
-    InariDB.profileUpdateDismissed[key] = nil
+    local storeKey = ImportedVersionKey(key)
+    InariDB.importedProfileVersions[storeKey] = GetBundledProfileVersion(key)
+    InariDB.profileUpdateDismissed[storeKey] = nil
 end
 
 local function FindEditModeLayoutIndex(layoutName)
@@ -602,17 +537,6 @@ local function BigWigsProfileExists(profileName)
     return false
 end
 
-local function BlinkiisPortraitsProfileExists(profileName)
-    if type(BlinkiisPortraitsDB) == "table"
-        and type(BlinkiisPortraitsDB.profiles) == "table"
-        and type(BlinkiisPortraitsDB.profiles[profileName]) == "table" then
-        return true
-    end
-
-    local db = BLINKIISPORTRAITS and BLINKIISPORTRAITS.db
-    return db and type(db.profiles) == "table" and type(db.profiles[profileName]) == "table"
-end
-
 local function EXBossProfileExists(profileName)
     local wanted = tostring(profileName or ""):lower()
     if wanted == "" then return false end
@@ -636,12 +560,6 @@ local function EXBossProfileExists(profileName)
     return false
 end
 
-EllesmereProfileExists = function(profileName)
-    return type(EllesmereUIDB) == "table"
-        and type(EllesmereUIDB.profiles) == "table"
-        and type(EllesmereUIDB.profiles[profileName]) == "table"
-end
-
 local function SArenaProfileExists(profileName)
     if type(sArena_ReloadedDB) == "table"
         and type(sArena_ReloadedDB.profiles) == "table"
@@ -657,54 +575,6 @@ local function BaganatorProfileExists(profileName)
     return type(BAGANATOR_CONFIG) == "table"
         and type(BAGANATOR_CONFIG.Profiles) == "table"
         and type(BAGANATOR_CONFIG.Profiles[profileName]) == "table"
-end
-
-GetActiveEllesmereProfile = function()
-    if EllesmereUI and type(EllesmereUI.GetActiveProfileName) == "function" then
-        local ok, profileName = pcall(EllesmereUI.GetActiveProfileName)
-        if ok and type(profileName) == "string" and profileName ~= "" then
-            return profileName
-        end
-    end
-
-    if type(EllesmereUIDB) == "table" and type(EllesmereUIDB.activeProfile) == "string" then
-        return EllesmereUIDB.activeProfile
-    end
-
-    return nil
-end
-
-local function GetCurrentEllesmereSpecProfile()
-    if type(EllesmereUIDB) ~= "table" then return nil end
-
-    local characterKey = GetInariCharacterKey()
-    local specID = type(EllesmereUIDB.lastSpecByChar) == "table"
-        and EllesmereUIDB.lastSpecByChar[characterKey]
-        or nil
-
-    if not specID and GetSpecialization and GetSpecializationInfo then
-        local specIndex = GetSpecialization()
-        if specIndex and specIndex > 0 then
-            specID = GetSpecializationInfo(specIndex)
-        end
-    end
-
-    if not specID then return nil end
-
-    if EllesmereUI and type(EllesmereUI.GetSpecProfile) == "function" then
-        local ok, profileName = pcall(EllesmereUI.GetSpecProfile, specID)
-        if ok and type(profileName) == "string" and profileName ~= "" then
-            return profileName
-        end
-    end
-
-    local specProfiles = EllesmereUIDB.specProfiles
-    local profileName = type(specProfiles) == "table" and specProfiles[specID] or nil
-    if type(profileName) == "string" and profileName ~= "" then
-        return profileName
-    end
-
-    return nil
 end
 
 local function ResolveInstalledEllesmereProfile()
@@ -743,11 +613,7 @@ ActivateEllesmereLayoutProfile = function(profileName)
             EllesmereUIDB.specProfiles = EllesmereUIDB.specProfiles or {}
             local assigned = EllesmereUIDB.specProfiles[specID]
             if not assigned or IsInariEllesmereProfile(assigned) then
-                if EllesmereUI and type(EllesmereUI.AssignProfileToSpec) == "function" then
-                    pcall(EllesmereUI.AssignProfileToSpec, profileName, specID)
-                else
-                    EllesmereUIDB.specProfiles[specID] = profileName
-                end
+                EllesmereUIDB.specProfiles[specID] = profileName
             end
         end
     end
@@ -826,33 +692,6 @@ local function ApplyExistingBigWigsProfile(applied, missing, failed)
     end
 
     applied[#applied + 1] = "BigWigs"
-end
-
-local function ApplyExistingBlinkiisPortraitsProfile(applied, missing, failed)
-    TryLoadAddon("Blinkiis_Portraits")
-
-    if not BlinkiisPortraitsProfileExists("inari") then
-        missing[#missing + 1] = "Blinkii's Portraits"
-        return
-    end
-
-    local db = BLINKIISPORTRAITS and BLINKIISPORTRAITS.db
-    if db and type(db.SetProfile) == "function" then
-        local ok, err = pcall(db.SetProfile, db, "inari")
-        if not ok then
-            failed[#failed + 1] = "Blinkii's Portraits: " .. tostring(err)
-            return
-        end
-    elseif type(BlinkiisPortraitsDB) == "table" then
-        BlinkiisPortraitsDB.profileKeys = BlinkiisPortraitsDB.profileKeys or {}
-        BlinkiisPortraitsDB.profileKeys[GetInariCharacterKey()] = "inari"
-    end
-
-    if BLINKIISPORTRAITS and type(BLINKIISPORTRAITS.LoadPortraits) == "function" then
-        pcall(BLINKIISPORTRAITS.LoadPortraits, BLINKIISPORTRAITS)
-    end
-
-    applied[#applied + 1] = "Blinkii's Portraits"
 end
 
 local function FindEXBossInariAuthor(slotKey)
@@ -1061,7 +900,7 @@ local function ShouldOfferInstalledProfiles()
 end
 
 local function GetManagedProfileDefs()
-    return {
+    local defs = {
         {
             key = "bigwigs",
             label = "BigWigs",
@@ -1125,8 +964,16 @@ local function GetManagedProfileDefs()
             import = function()
                 return ImportInariCooldownLayouts()
             end,
+            retailOnly = true,
         },
     }
+
+    if ns.IS_FOREVER then
+        for index = #defs, 1, -1 do
+            if defs[index].retailOnly then table.remove(defs, index) end
+        end
+    end
+    return defs
 end
 
 local function SeedInstalledProfileVersions()
@@ -1134,8 +981,9 @@ local function SeedInstalledProfileVersions()
     if InariDB.profileVersionsSeeded then return end
 
     for _, def in ipairs(GetManagedProfileDefs()) do
-        if def.exists() and InariDB.importedProfileVersions[def.key] == nil then
-            InariDB.importedProfileVersions[def.key] = GetBundledProfileVersion(def.key)
+        local storeKey = ImportedVersionKey(def.key)
+        if def.exists() and InariDB.importedProfileVersions[storeKey] == nil then
+            InariDB.importedProfileVersions[storeKey] = GetBundledProfileVersion(def.key)
         end
     end
 
@@ -1150,7 +998,7 @@ local function GetOutdatedInstalledProfiles()
     for _, def in ipairs(GetManagedProfileDefs()) do
         if def.exists() then
             local bundled = GetBundledProfileVersion(def.key)
-            local imported = InariDB.importedProfileVersions[def.key]
+            local imported = InariDB.importedProfileVersions[ImportedVersionKey(def.key)]
             if type(imported) ~= "number" then imported = 0 end
             if imported < bundled then
                 outdated[#outdated + 1] = def
@@ -1229,12 +1077,25 @@ local function ReimportOutdatedProfiles(outdated, onDone)
     end
 end
 
+-- "Not now" skips the bundled version it was shown for; the next bump asks again.
+local function DismissProfileUpdates(defs)
+    EnsureDB()
+    for _, def in ipairs(defs or {}) do
+        InariDB.profileUpdateDismissed[ImportedVersionKey(def.key)] = GetBundledProfileVersion(def.key)
+    end
+end
+
 local function ShouldOfferProfileUpdates()
     EnsureDB()
     if InariDB.profileUpdateEnabled == false then return false end
     if InariDB.installerCompletedVersion ~= CONST.profilePromptVersion then return false end
     if State.profileUpdatePromptDismissedThisSession then return false end
-    return #GetOutdatedInstalledProfiles() > 0
+    for _, def in ipairs(GetOutdatedInstalledProfiles()) do
+        if InariDB.profileUpdateDismissed[ImportedVersionKey(def.key)] ~= GetBundledProfileVersion(def.key) then
+            return true
+        end
+    end
+    return false
 end
 
 local function ScheduleInstalledProfilesOffer()
@@ -1282,6 +1143,11 @@ local function StartsWith(text, prefix)
 end
 
 local function GetInariCooldownData()
+    -- Bundled layouts are retail class/spec spell lists; they do not map onto Forever.
+    if ns.IS_FOREVER then
+        return nil, "inari cooldown layouts are retail-only and not available on WoW Forever"
+    end
+
     local classKey = GetClassKey()
     local classData = classKey and InariCooldownLayouts and InariCooldownLayouts[classKey]
     if type(classData) ~= "string" then
@@ -1418,7 +1284,7 @@ end
 HasInariCooldownLayouts = function()
     local layoutManager = GetCooldownLayoutManager()
     if not layoutManager or type(layoutManager.layouts) ~= "table" then return false end
-    local prefix = "inari - "
+    local prefix = "inari - " .. GetClassDisplayName()
     for _, layout in pairs(layoutManager.layouts) do
         local name = layout and (layout.name or layout.layoutName)
         if type(name) == "string" and StartsWith(name, prefix) then
@@ -1431,27 +1297,26 @@ end
 local function GetCooldownLayoutVersionInfo()
     EnsureDB()
     local bundled = GetBundledProfileVersion("cdm")
-    local imported = InariDB.importedProfileVersions and InariDB.importedProfileVersions.cdm
+    local imported = InariDB.importedProfileVersions and InariDB.importedProfileVersions[ImportedVersionKey("cdm")]
     local hasLayouts = HasInariCooldownLayouts()
     if type(imported) ~= "number" then imported = nil end
     return {
         bundled = bundled,
         imported = imported,
         hasLayouts = hasLayouts,
-        outdated = imported ~= nil and imported < bundled,
+        outdated = hasLayouts and (imported or 0) < bundled,
     }
 end
 
 
 ns.GetBundledProfileVersion = GetBundledProfileVersion
+ns.GetProfileUpdateNote = GetProfileUpdateNote
 ns.MarkImportedProfileVersion = MarkImportedProfileVersion
 ns.ImportEllesmereUIProfile = ImportEllesmereUIProfile
 ns.ImportBothEllesmereUIProfiles = ImportBothEllesmereUIProfiles
 ns.ActivateEllesmereLayoutProfile = ActivateEllesmereLayoutProfile
-ns.GetEllesmereLayoutProfileName = GetEllesmereLayoutProfileName
 ns.ImportBigWigsProfile = ImportBigWigsProfile
 ns.ImportEditModeLayout = ImportEditModeLayout
-ns.ImportBlinkiisPortraitsProfile = ImportBlinkiisPortraitsProfile
 ns.ImportEXBossProfile = ImportEXBossProfile
 ns.ImportSArenaProfile = ImportSArenaProfile
 ns.ImportBaganatorProfile = ImportBaganatorProfile
@@ -1466,4 +1331,5 @@ ns.GetOutdatedInstalledProfiles = GetOutdatedInstalledProfiles
 ns.FormatProfileLabelList = FormatProfileLabelList
 ns.ReimportOutdatedProfiles = ReimportOutdatedProfiles
 ns.ShouldOfferProfileUpdates = ShouldOfferProfileUpdates
+ns.DismissProfileUpdates = DismissProfileUpdates
 ns.ScheduleInstalledProfilesOffer = ScheduleInstalledProfilesOffer

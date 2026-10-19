@@ -21,7 +21,7 @@ local function SameColor(left, right)
 end
 
 local function ApplyEllesmereThemeSettings(forceLive, refreshOptions)
-    if not InariDB.forceEUITheme then return false end
+    if not InariDB.enabled or not InariDB.forceEUITheme then return false end
 
     local root = _G.EllesmereUIDB
     if type(root) ~= "table" then return false end
@@ -208,7 +208,9 @@ local function ApplyChatRuntimePreset(chat)
     if data.scrollBtn then data.scrollBtn:SetShown(chat.showScroll ~= false) end
 end
 
-ApplyChatSettings = function()
+-- applyPreset writes inari's full chat look (installer / "install settings");
+-- without it only the sidebar side is kept in sync.
+ApplyChatSettings = function(applyPreset)
     TryLoadAddon("EllesmereUIChat")
 
     local profile = EnsureEllesmereAddonProfile("EllesmereUIChat")
@@ -218,47 +220,64 @@ ApplyChatSettings = function()
     local chat = profile.chat
     local changed = false
 
-    local preset = {
-        enabled = true,
-        visibility = "always",
-        visOnlyInstances = false,
-        visHideHousing = false,
-        visHideMounted = false,
-        visHideNoTarget = false,
-        visHideNoEnemy = false,
-        bgAlpha = 0,
-        bgR = 0.03,
-        bgG = 0.045,
-        bgB = 0.05,
-        idleFadeDelay = 15,
-        idleFadeStrength = 40,
-        font = "__global",
-        outlineMode = "__global",
-        timestampFormat = "%I:%M ",
-        sidebarVisibility = "mouseover",
-        showFriends = true,
-        showCopy = true,
-        showPortals = true,
-        showVoice = false,
-        showSettings = true,
-        showScroll = true,
-        iconR = 1,
-        iconG = 1,
-        iconB = 1,
-        iconUseAccent = false,
-        hideSidebarBg = false,
-        sidebarIconScale = 1.0,
-        freeMoveIcons = false,
-        hideTooltipOnHover = true,
-        hideBorders = false,
-        lockChatSize = false,
-        inputOnTop = true,
-        whisperSoundKey = "none",
-    }
+    if applyPreset then
+        local preset = {
+            enabled = true,
+            visibility = "always",
+            visOnlyInstances = false,
+            visHideHousing = false,
+            visHideMounted = false,
+            visHideNoTarget = false,
+            visHideNoEnemy = false,
+            bgAlpha = 0,
+            bgR = 0.03,
+            bgG = 0.045,
+            bgB = 0.05,
+            idleFadeDelay = 15,
+            idleFadeStrength = 40,
+            font = "__global",
+            outlineMode = "__global",
+            timestampFormat = "%I:%M ",
+            sidebarVisibility = "mouseover",
+            showFriends = true,
+            showCopy = true,
+            showPortals = true,
+            showVoice = false,
+            showSettings = true,
+            showScroll = true,
+            iconR = 1,
+            iconG = 1,
+            iconB = 1,
+            iconUseAccent = false,
+            hideSidebarBg = false,
+            sidebarIconScale = 1.0,
+            freeMoveIcons = false,
+            hideTooltipOnHover = true,
+            hideBorders = false,
+            lockChatSize = false,
+            inputOnTop = true,
+            whisperSoundKey = "none",
+        }
 
-    for key, value in pairs(preset) do
-        if chat[key] ~= value then
-            chat[key] = value
+        for key, value in pairs(preset) do
+            if chat[key] ~= value then
+                chat[key] = value
+                changed = true
+            end
+        end
+
+        local iconOrder = chat.sidebarIconOrder
+        if type(iconOrder) ~= "table"
+            or iconOrder.showCopy ~= 1
+            or iconOrder.showPortals ~= 2
+            or iconOrder.showVoice ~= 3
+            or iconOrder.showSettings ~= 4 then
+            chat.sidebarIconOrder = {
+                showCopy = 1,
+                showPortals = 2,
+                showVoice = 3,
+                showSettings = 4,
+            }
             changed = true
         end
     end
@@ -268,23 +287,8 @@ ApplyChatSettings = function()
         changed = true
     end
 
-    local iconOrder = chat.sidebarIconOrder
-    if type(iconOrder) ~= "table"
-        or iconOrder.showCopy ~= 1
-        or iconOrder.showPortals ~= 2
-        or iconOrder.showVoice ~= 3
-        or iconOrder.showSettings ~= 4 then
-        chat.sidebarIconOrder = {
-            showCopy = 1,
-            showPortals = 2,
-            showVoice = 3,
-            showSettings = 4,
-        }
-        changed = true
-    end
-
     ApplyChatSidebarPosition()
-    ApplyChatRuntimePreset(chat)
+    if applyPreset then ApplyChatRuntimePreset(chat) end
     return changed
 end
 
@@ -701,7 +705,7 @@ local function ApplyDamageMeterSettings()
 end
 
 local function ApplyEllesmereExtrasSettings()
-    local chatChanged = ApplyChatSettings()
+    local chatChanged = ApplyChatSettings(true)
     local blizzOk, blizzMessage = ApplyBlizzardUIEnhancedSettings()
     if not blizzOk then return false, blizzMessage end
     local dmOk, dmMessage = ApplyDamageMeterSettings()

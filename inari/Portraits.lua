@@ -90,8 +90,12 @@ local function RingColor(unit)
     return 1, 1, 1
 end
 
+-- Returns true when a previously suppressed portrait was released.
 local function SetUnitFramePortraitSuppressed(parent, suppressed)
-    if not parent then return end
+    if not parent then return false end
+    local wasSuppressed = parent._inariPortraitSuppressed == true
+    if not suppressed and not wasSuppressed then return false end
+    parent._inariPortraitSuppressed = suppressed and true or nil
     local portrait = parent.Portrait
     local backdrop = portrait and portrait.backdrop
     local function HookHide(frame)
@@ -113,9 +117,9 @@ local function SetUnitFramePortraitSuppressed(parent, suppressed)
         if suppressed then
             frame:Hide()
             if frame.SetAlpha then frame:SetAlpha(0) end
-        else
-            if frame.SetAlpha then frame:SetAlpha(1) end
-            frame:Show()
+        elseif frame.SetAlpha then
+            -- Only undo our own hiding; Ellesmere's reload decides what shows.
+            frame:SetAlpha(1)
         end
     end
     local function ApplyTree(frame)
@@ -138,9 +142,8 @@ local function SetUnitFramePortraitSuppressed(parent, suppressed)
     ApplyTree(backdrop)
     if type(parent.DisableElement) == "function" and suppressed then
         pcall(parent.DisableElement, parent, "Portrait")
-    elseif type(parent.EnableElement) == "function" and not suppressed then
-        pcall(parent.EnableElement, parent, "Portrait")
     end
+    return wasSuppressed and not suppressed
 end
 
 local function ApplyMask(frame)
@@ -395,10 +398,14 @@ end
 function ns.RefreshPortraits()
     ns.EnsureDB()
     local db = DB()
-    if not db.enabled then
+    if not db.enabled or not InariDB.enabled then
+        local released = false
         for _, unit in ipairs(UNITS) do
             HidePortrait(unit)
-            SetUnitFramePortraitSuppressed(ParentFrame(unit), true)
+            released = SetUnitFramePortraitSuppressed(ParentFrame(unit), false) or released
+        end
+        if released and ns.ReloadEllesmereFrames and not (InCombatLockdown and InCombatLockdown()) then
+            ns.ReloadEllesmereFrames()
         end
         return
     end

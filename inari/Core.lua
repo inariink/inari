@@ -43,7 +43,7 @@ local STATUSBAR_MEDIA = {
     { name = "Skyline Compact", path = "Interface\\AddOns\\inari\\Media\\bar_skyline_compact.png" },
     { name = "Bar Grad", path = "Interface\\AddOns\\inari\\Media\\bar_grad.tga" },
 }
--- Display names match Naowh's labels, tagged as inari for WeakAuras / SharedMedia pickers.
+-- Display names are tagged as inari for WeakAuras / SharedMedia pickers.
 local SOUND_MEDIA = {
     { name = "|cfff47c9b+Damage - inari|r", file = "+Damage.ogg" },
     { name = "|cfff47c9b1 - inari|r", file = "1.ogg" },
@@ -151,6 +151,9 @@ local CONST = {
     ACCENT_COLOR = { r = 0xE8 / 255, g = 0xA4 / 255, b = 0xB8 / 255 },
     DARK_BG_COLOR = { r = 0x11 / 255, g = 0x11 / 255, b = 0x11 / 255 },
     UI_SCALE = 0.5333333333,
+    -- 16:9 EllesmereUI layout is disabled until a new export exists. To re-enable: restore
+    -- InariProfiles.ellesmereui16 in ProfileStrings.lua and set this to true.
+    LAYOUT_16_ENABLED = false,
     idleFadeAlpha = 0.07,
     idleFadeInterval = 0.35,
     profilePromptVersion = 1,
@@ -684,14 +687,31 @@ local function NormalizeLayoutAspect(value)
         return "21"
     end
     if value == "16" or value == "16:9" or value == "16x9" or value == "standard" then
-        return "16"
+        return CONST.LAYOUT_16_ENABLED and "16" or nil
     end
     return nil
 end
 
+local IsLegacy16Layout
+
 local function GetLayoutAspect()
+    if not CONST.LAYOUT_16_ENABLED then return IsLegacy16Layout() and "16" or "21" end
     EnsureDB()
     return InariDB.layoutAspect == "21" and "21" or "16"
+end
+
+-- Segmented-control options for the layout pickers; 16:9 is left out while it is disabled.
+local function GetLayoutAspectOptions(width, height)
+    local options = {}
+    if CONST.LAYOUT_16_ENABLED or IsLegacy16Layout() then
+        options[#options + 1] = { label = "16:9", value = "16", width = width, height = height }
+    end
+    options[#options + 1] = { label = "21:9", value = "21", width = width, height = height }
+    return options
+end
+
+local function GetLayoutAspectUsage()
+    return CONST.LAYOUT_16_ENABLED and "16|21" or "21"
 end
 
 local function SetLayoutAspect(value)
@@ -720,6 +740,14 @@ local function EllesmereProfileExists(profileName)
     return type(EllesmereUIDB) == "table"
         and type(EllesmereUIDB.profiles) == "table"
         and type(EllesmereUIDB.profiles[profileName]) == "table"
+end
+
+-- While 16:9 is disabled, players already on an installed inari16:9 profile stay on it:
+-- they keep that layout and are not offered the 21:9-only EllesmereUI update.
+IsLegacy16Layout = function()
+    if CONST.LAYOUT_16_ENABLED then return false end
+    EnsureDB()
+    return InariDB.layoutAspect == "16" and EllesmereProfileExists("inari16:9")
 end
 
 local function GetActiveEllesmereProfile()
@@ -1398,9 +1426,9 @@ local function ShowHelp()
         ", layout=" .. GetLayoutAspectLabel())
     Print("/inari or /iui opens settings, /inari help shows this list")
     Print("general: /inari on|off, /inari apply, /inari media, /inari doctor, /inari reset")
-    Print("appearance: /inari appearance dark|class, /inari layout 16|21, /inari bg on|off, /inari theme on|off, /inari tint 75, /inari opacity 85, /inari shadows on|off")
+    Print("appearance: /inari appearance dark|class, /inari layout " .. GetLayoutAspectUsage() .. ", /inari bg on|off, /inari theme on|off, /inari tint 75, /inari opacity 85, /inari shadows on|off")
     Print("extras: /inari idlefade on|off, /inari arrows on|off|30, /inari paging on|off, /inari chat right|left, /inari portraits")
-    Print("setup: /inari install [ellesmere [16|21]|bigwigs|editmode|exboss|sarena|baganator|settings], /inari cvars, /inari fct on|off, /inari fps, /inari graphics inari")
+    Print("setup: /inari install [ellesmere [" .. GetLayoutAspectUsage() .. "]|bigwigs|editmode|exboss|sarena|baganator|dynamiccam|settings], /inari cvars, /inari fct on|off, /inari fps, /inari graphics inari")
     Print("profiles: /inari profiles, /inari cdm import")
 end
 
@@ -1470,7 +1498,7 @@ SlashCmdList.INARI = function(msg)
         else
             local aspect = SetLayoutAspect(arg)
             if not aspect then
-                Print("usage: /inari layout 16|21")
+                Print("usage: /inari layout " .. GetLayoutAspectUsage())
                 return
             end
             if InCombatLockdown and InCombatLockdown() then
@@ -1578,7 +1606,7 @@ SlashCmdList.INARI = function(msg)
             if rest ~= "" then
                 local aspect = SetLayoutAspect(rest)
                 if not aspect then
-                    Print("usage: /inari install ellesmere [16|21]")
+                    Print("usage: /inari install ellesmere [" .. GetLayoutAspectUsage() .. "]")
                     return
                 end
             end
@@ -1608,6 +1636,9 @@ SlashCmdList.INARI = function(msg)
         elseif arg == "baganator" or arg == "bags" or arg == "bag" then
             local ok, message = ns.ImportBaganatorProfile()
             Print(message or (ok and "Baganator imported" or "Baganator import failed"))
+        elseif arg == "dynamiccam" or arg == "dc" or arg == "camera" then
+            local ok, message = ns.ImportDynamicCamProfile()
+            Print(message or (ok and "DynamicCam imported" or "DynamicCam import failed"))
         elseif arg == "settings" or arg == "extras" or arg == "blizz" or arg == "blizzard" then
             local ok, message = ns.ApplyEllesmereExtrasSettings()
             Print(message or (ok and "Ellesmere settings applied" or "Ellesmere settings failed"))
@@ -1888,6 +1919,8 @@ ns.DetectLayoutAspect = DetectLayoutAspect
 ns.GetLayoutAspect = GetLayoutAspect
 ns.SetLayoutAspect = SetLayoutAspect
 ns.GetLayoutAspectLabel = GetLayoutAspectLabel
+ns.GetLayoutAspectOptions = GetLayoutAspectOptions
+ns.IsLegacy16Layout = IsLegacy16Layout
 ns.GetEllesmereLayoutProfileName = GetEllesmereLayoutProfileName
 ns.IsInariEllesmereProfile = IsInariEllesmereProfile
 ns.IsInariEllesmereProfileActive = IsInariEllesmereProfileActive

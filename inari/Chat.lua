@@ -534,54 +534,6 @@ local function ApplyBlizzardUIEnhancedSettings()
         end
     end
 
-    local dragon = EnsureEllesmereAddonProfile("EllesmereUIDragonRiding")
-    if type(dragon) == "table" then
-        local function DragonSet(key, value)
-            if dragon[key] ~= value then
-                dragon[key] = value
-                changed = true
-            end
-        end
-        local function DragonColor(key, r, g, b, a)
-            local current = dragon[key]
-            if type(current) ~= "table"
-                or current.r ~= r
-                or current.g ~= g
-                or current.b ~= b
-                or current.a ~= a then
-                dragon[key] = { r = r, g = g, b = b, a = a }
-                changed = true
-            end
-        end
-
-        DragonSet("enabled", true)
-        DragonSet("hideInCombat", false)
-        DragonSet("width", 240)
-        DragonSet("gap", 2)
-        DragonSet("stackSpacing", 2)
-        DragonSet("borderThickness", 0)
-        DragonSet("barTexture", "sm:DF Flat")
-        DragonSet("skyridingHeight", 10)
-        DragonSet("secondWindHeight", 6)
-        DragonSet("speedHeight", 14)
-        DragonSet("thrillColorToggle", true)
-        DragonColor("borderColor", 0.0, 0.0, 0.0, 1.0)
-        DragonColor("skyridingBg", 0.10, 0.10, 0.10, 0.80)
-        DragonColor("skyridingFilled", 0.047, 0.824, 0.624, 1.0)
-        DragonColor("secondWindBg", 0.10, 0.10, 0.10, 0.80)
-        DragonColor("secondWindFilled", 0.902, 0.706, 0.133, 1.0)
-        DragonColor("speedBarBg", 0.10, 0.10, 0.10, 0.80)
-        DragonColor("normalColor", 0.055, 0.667, 0.761, 1.0)
-        DragonColor("tickColor", 1.00, 1.00, 1.00, 0.50)
-        DragonColor("thrillColor", 0.902, 0.494, 0.133, 1.0)
-
-        if type(dragon.whirlingSurgeText) ~= "table" then dragon.whirlingSurgeText = {}; changed = true end
-        if dragon.whirlingSurgeText.enabled ~= true then dragon.whirlingSurgeText.enabled = true; changed = true end
-        if type(dragon.speedText) ~= "table" then dragon.speedText = {}; changed = true end
-        if dragon.speedText.enabled ~= true then dragon.speedText.enabled = true; changed = true end
-        if dragon.speedText.justify ~= "CENTER" then dragon.speedText.justify = "CENTER"; changed = true end
-    end
-
     if EllesmereUI then
         if EllesmereUI._refreshStatsVisibility then pcall(EllesmereUI._refreshStatsVisibility) end
         if EllesmereUI._refreshStatFormats then pcall(EllesmereUI._refreshStatFormats) end

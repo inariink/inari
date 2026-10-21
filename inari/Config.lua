@@ -30,6 +30,7 @@ local SUPPORTED_ADDONS = {
     { name = "EXBoss", label = "EXBoss" },
     { name = "sArena_Reloaded", label = "sArena Reloaded" },
     { name = "Baganator", label = "Baganator" },
+    { name = "DynamicCam", label = "DynamicCam" },
 }
 
 local function NormalizePage(page)
@@ -45,9 +46,6 @@ local function NormalizePage(page)
 end
 
 local function CooldownVersionStatus()
-    if ns.IS_FOREVER then
-        return "Retail only", "muted"
-    end
     local info = ns.GetCooldownLayoutVersionInfo and ns.GetCooldownLayoutVersionInfo()
     if not info then
         return "Not imported", "warn"
@@ -663,10 +661,7 @@ local function BuildLayout(frame, ui)
 
     local monitor = page:AddSection("Monitor")
     local currentRow = monitor:AddInfoRow("Current", "—")
-    local layoutControl = monitor:AddSegmented({
-        { label = "16:9", value = "16", width = 170 },
-        { label = "21:9", value = "21", width = 170 },
-    }, ns.GetLayoutAspect and ns.GetLayoutAspect() or "16", function(_, aspect)
+    local layoutControl = monitor:AddSegmented(ns.GetLayoutAspectOptions(170), ns.GetLayoutAspect and ns.GetLayoutAspect() or "16", function(_, aspect)
         if aspect == (ns.GetLayoutAspect and ns.GetLayoutAspect()) then return end
         ReimportEllesmereLayout(page, aspect)
         if page.Refresh then page:Refresh() end
@@ -732,10 +727,7 @@ local function BuildOverview(frame, ui)
     end)
     appearanceCard:AttachControl(appearanceControl)
 
-    local layoutControl = ui:CreateSegmentedControl(layoutCard.controlHost, {
-        { label = "16:9", value = "16", width = 80, height = 26 },
-        { label = "21:9", value = "21", width = 80, height = 26 },
-    })
+    local layoutControl = ui:CreateSegmentedControl(layoutCard.controlHost, ns.GetLayoutAspectOptions(80, 26))
     layoutControl:SetOnChanged(function(_, aspect)
         if aspect == (ns.GetLayoutAspect and ns.GetLayoutAspect()) then return end
         ReimportEllesmereLayout(nil, aspect)
@@ -822,16 +814,12 @@ local function BuildOverview(frame, ui)
         local cooldownStatus, cooldownKind = CooldownVersionStatus()
         cooldownsCard:SetStatus(cooldownStatus, cooldownKind)
         cooldownsCard:SetAttention(cooldownKind == "warn")
-        if ns.IS_FOREVER then
-            cooldownsCard:SetAction(nil)
-        else
-            local cooldownAction = cooldownKind == "warn" and cooldownStatus ~= "Not imported" and "UPDATE LAYOUTS" or "IMPORT LAYOUTS"
-            cooldownsCard:SetAction(cooldownAction, cooldownKind == "warn" and "primary" or "ghost", function()
-                local ok, message = ns.ImportInariCooldownLayouts()
-                Print(message or (ok and "cooldown layouts imported" or "cooldown import failed"))
-                overview:Refresh()
-            end)
-        end
+        local cooldownAction = cooldownKind == "warn" and cooldownStatus ~= "Not imported" and "UPDATE LAYOUTS" or "IMPORT LAYOUTS"
+        cooldownsCard:SetAction(cooldownAction, cooldownKind == "warn" and "primary" or "ghost", function()
+            local ok, message = ns.ImportInariCooldownLayouts()
+            Print(message or (ok and "cooldown layouts imported" or "cooldown import failed"))
+            overview:Refresh()
+        end)
 
         local scaleOk = UIScaleIsCorrect() or InariDB.keepUIScale == true
         if InariDB.installerPendingFinalScale then

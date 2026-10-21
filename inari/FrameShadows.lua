@@ -449,11 +449,22 @@ local function LayoutShadow(host, shadow)
         local powerTop = SafeNumber(power.GetTop and power:GetTop())
         local healthBottom = SafeNumber(host.GetBottom and host:GetBottom())
         local powerBottom = SafeNumber(power.GetBottom and power:GetBottom())
-        if healthTop and powerTop and powerTop > healthTop + 0.5 then
-            top = power
-        end
-        if healthBottom and powerBottom and powerBottom < healthBottom - 0.5 then
-            bottom = power
+        local healthLeft = SafeNumber(host.GetLeft and host:GetLeft())
+        local powerLeft = SafeNumber(power.GetLeft and power:GetLeft())
+        local healthRight = SafeNumber(host.GetRight and host:GetRight())
+        local powerRight = SafeNumber(power.GetRight and power:GetRight())
+        -- Only merge with an attached power bar; a detached one leaves an unshadowed gap.
+        local attached = healthLeft and powerLeft and healthRight and powerRight
+            and math.abs(healthLeft - powerLeft) <= 1 and math.abs(healthRight - powerRight) <= 1
+            and ((healthBottom and powerTop and math.abs(powerTop - healthBottom) <= 0.5)
+                or (healthTop and powerBottom and math.abs(powerBottom - healthTop) <= 0.5))
+        if attached then
+            if healthTop and powerTop and powerTop > healthTop + 0.5 then
+                top = power
+            end
+            if healthBottom and powerBottom and powerBottom < healthBottom - 0.5 then
+                bottom = power
+            end
         end
     end
 

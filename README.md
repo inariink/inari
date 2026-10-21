@@ -22,7 +22,7 @@
 
 </div>
 
-inari is the installer, profiles, and extras on top of [EllesmereUI](https://www.curseforge.com/wow/addons/ellesmereui). It imports 16:9 and 21:9 layouts, player and target portraits, frame shadows, and the supporting profiles for BigWigs, EXBoss, sArena, and Baganator.
+inari is the installer, profiles, and extras on top of [EllesmereUI](https://www.curseforge.com/wow/addons/ellesmereui). It imports 16:9 and 21:9 layouts, player and target portraits, frame shadows, and the supporting profiles for BigWigs, EXBoss, sArena, Baganator, and DynamicCam.
 
 Setup and downloads live on **[inari.ink](https://inari.ink)**. This repo is the addon.
 
@@ -46,10 +46,10 @@ No WowUp? Grab [inari.zip](https://github.com/inariink/inari/releases/latest/dow
 - **Layouts** — Bundled EllesmereUI profiles for 16:9 and 21:9. The installer imports both; switch later with `/inari layout 16` or `/inari layout 21`.
 - **Portraits** — Player and target portraits are built in. Blinkii's Portraits is not required.
 - **Appearance** — Dark or class coloring, health opacity, class-background tint, chat button side, and drop shadows on unit frames, resource bars, and the cooldown manager.
-- **Profiles** — Imports for BigWigs (including boss options and an inari countdown voice), EXBoss, sArena Reloaded, Baganator, and Cooldown Manager.
+- **Profiles** — Imports for BigWigs (including boss options and an inari countdown voice), EXBoss, sArena Reloaded, Baganator, DynamicCam, and Cooldown Manager.
 - **Healing** — A healing profile that activates on healer specs.
 
-Required: **EllesmereUI** and **inari**. Optional, but what the installer styles: BigWigs / LittleWigs, EXBoss, sArena Reloaded, Baganator.
+Required: **EllesmereUI** and **inari**. Optional, but what the installer styles: BigWigs / LittleWigs, EXBoss, sArena Reloaded, Baganator, DynamicCam.
 
 ## Commands
 

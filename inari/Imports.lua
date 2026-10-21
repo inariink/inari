@@ -267,6 +267,16 @@ local function ImportBothEllesmereUIProfiles(activateAspect)
         ns.SetLayoutAspect(activateAspect)
         activateAspect = ns.GetLayoutAspect() or activateAspect
     end
+    -- Only 21:9 ships while the 16:9 layout is disabled (CONST.LAYOUT_16_ENABLED).
+    -- Players already on inari16:9 keep that profile instead of failing on the missing string.
+    if not CONST.LAYOUT_16_ENABLED then
+        if activateAspect == "16" then
+            local ok, message = ActivateEllesmereLayoutProfile("inari16:9")
+            if not ok then return false, message end
+            return true, "kept your inari16:9 EllesmereUI layout"
+        end
+        return ImportEllesmereUIProfile(activateAspect)
+    end
     local otherAspect = activateAspect == "21" and "16" or "21"
     local ok, message = ImportEllesmereUIProfile(otherAspect, { activate = false })
     if not ok then
@@ -473,6 +483,46 @@ local function ImportBaganatorProfile()
     return true, "Baganator profile imported as inari"
 end
 
+local function DynamicCamProfileExists(profileName)
+    return type(DynamicCamDB) == "table"
+        and type(DynamicCamDB.profiles) == "table"
+        and type(DynamicCamDB.profiles[profileName]) == "table"
+end
+
+local function ImportDynamicCamProfile()
+    local importString = InariProfiles and InariProfiles.dynamiccam
+    if type(importString) ~= "string" or importString == "" then
+        return false, "missing DynamicCam profile string"
+    end
+
+    if InCombatLockdown and InCombatLockdown() then
+        return false, "leave combat before importing DynamicCam"
+    end
+
+    TryLoadAddon("DynamicCam")
+
+    local dc = DynamicCam
+    if not dc or not dc.db or type(dc.db.SetProfile) ~= "function"
+        or type(dc.ImportIntoCurrentProfile) ~= "function" then
+        return false, "DynamicCam import API is not available"
+    end
+
+    -- Switch to (or create) "inari", then let DynamicCam reset it and load the string,
+    -- so reimports overwrite the profile instead of being refused as a duplicate.
+    local ok, err = pcall(dc.db.SetProfile, dc.db, "inari")
+    if not ok then
+        return false, tostring(err or "DynamicCam profile switch failed")
+    end
+
+    ok, err = pcall(dc.ImportIntoCurrentProfile, dc, importString)
+    if not ok then
+        return false, tostring(err or "DynamicCam import failed")
+    end
+
+    MarkImportedProfileVersion("dynamiccam")
+    return true, "DynamicCam profile imported as inari"
+end
+
 GetBundledProfileVersion = function(key)
     local versions = InariProfiles and InariProfiles.versions
     local version = versions and versions[key]
@@ -644,12 +694,14 @@ local function HasInstalledInariProfiles()
     TryLoadAddon("EXBoss")
     TryLoadAddon("sArena_Reloaded")
     TryLoadAddon("Baganator")
+    TryLoadAddon("DynamicCam")
 
     return ResolveInstalledEllesmereProfile() ~= nil
         or BigWigsProfileExists("inari")
         or EXBossProfileExists("inari")
         or SArenaProfileExists("inari")
         or BaganatorProfileExists("inari")
+        or DynamicCamProfileExists("inari")
         or FindEditModeLayoutIndex("inari") ~= nil
 end
 
@@ -851,6 +903,34 @@ local function ApplyExistingBaganatorProfile(applied, missing, failed)
     applied[#applied + 1] = "Baganator"
 end
 
+local function ApplyExistingDynamicCamProfile(applied, missing, failed)
+    TryLoadAddon("DynamicCam")
+
+    if not DynamicCamProfileExists("inari") then
+        missing[#missing + 1] = "DynamicCam"
+        return
+    end
+
+    local db = DynamicCam and DynamicCam.db
+    if not db or type(db.SetProfile) ~= "function" then
+        failed[#failed + 1] = "DynamicCam: profile database is not available"
+        return
+    end
+
+    if type(db.GetCurrentProfile) == "function" and db:GetCurrentProfile() == "inari" then
+        applied[#applied + 1] = "DynamicCam (already active)"
+        return
+    end
+
+    local ok, err = pcall(db.SetProfile, db, "inari")
+    if not ok then
+        failed[#failed + 1] = "DynamicCam: " .. tostring(err)
+        return
+    end
+
+    applied[#applied + 1] = "DynamicCam"
+end
+
 local function ApplyInstalledProfilesToCharacter(markApplied)
     EnsureDB()
 
@@ -863,6 +943,7 @@ local function ApplyInstalledProfilesToCharacter(markApplied)
     ApplyExistingEXBossProfile(applied, missing, failed)
     ApplyExistingSArenaProfile(applied, missing, failed)
     ApplyExistingBaganatorProfile(applied, missing, failed)
+    ApplyExistingDynamicCamProfile(applied, missing, failed)
     ApplyExistingEditModeLayout(applied, missing, failed)
 
     if #applied > 0 and #failed == 0 and markApplied then
@@ -956,6 +1037,15 @@ local function GetManagedProfileDefs()
             import = ImportBaganatorProfile,
         },
         {
+            key = "dynamiccam",
+            label = "DynamicCam",
+            exists = function()
+                TryLoadAddon("DynamicCam")
+                return DynamicCamProfileExists("inari")
+            end,
+            import = ImportDynamicCamProfile,
+        },
+        {
             key = "cdm",
             label = "Cooldown Manager",
             exists = function()
@@ -964,7 +1054,6 @@ local function GetManagedProfileDefs()
             import = function()
                 return ImportInariCooldownLayouts()
             end,
-            retailOnly = true,
         },
     }
 
@@ -994,9 +1083,12 @@ local function GetOutdatedInstalledProfiles()
     EnsureDB()
     SeedInstalledProfileVersions()
 
+    -- The bundled EllesmereUI update is 21:9-only while 16:9 is disabled; keep 16:9 players on theirs.
+    local hold16 = ns.IsLegacy16Layout and ns.IsLegacy16Layout()
+
     local outdated = {}
     for _, def in ipairs(GetManagedProfileDefs()) do
-        if def.exists() then
+        if def.exists() and not (hold16 and def.key == "ellesmereui") then
             local bundled = GetBundledProfileVersion(def.key)
             local imported = InariDB.importedProfileVersions[ImportedVersionKey(def.key)]
             if type(imported) ~= "number" then imported = 0 end
@@ -1121,21 +1213,30 @@ local function GetClassDisplayName()
     return (classToken and LOCALIZED_CLASS_NAMES_MALE and LOCALIZED_CLASS_NAMES_MALE[classToken]) or classToken or "Class"
 end
 
+-- Spec APIs differ on WoW Forever, so every call is guarded and failures mean "no specs".
 local function GetSpecNames()
     local specs = {}
-    local count = GetNumSpecializations and GetNumSpecializations() or 0
+    if type(GetNumSpecializations) ~= "function" or type(GetSpecializationInfo) ~= "function" then
+        return specs
+    end
+    local okCount, count = pcall(GetNumSpecializations)
+    if not okCount or type(count) ~= "number" then return specs end
     for index = 1, count do
-        local _, specName = GetSpecializationInfo(index)
-        if specName then specs[#specs + 1] = specName end
+        local ok, _, specName = pcall(GetSpecializationInfo, index)
+        if ok and type(specName) == "string" then specs[#specs + 1] = specName end
     end
     return specs
 end
 
 local function GetCurrentSpecName()
-    local index = GetSpecialization and GetSpecialization()
-    if not index then return nil end
-    local _, specName = GetSpecializationInfo(index)
-    return specName
+    if type(GetSpecialization) ~= "function" or type(GetSpecializationInfo) ~= "function" then
+        return nil
+    end
+    local okIndex, index = pcall(GetSpecialization)
+    if not okIndex or type(index) ~= "number" then return nil end
+    local ok, _, specName = pcall(GetSpecializationInfo, index)
+    if ok and type(specName) == "string" then return specName end
+    return nil
 end
 
 local function StartsWith(text, prefix)
@@ -1143,13 +1244,11 @@ local function StartsWith(text, prefix)
 end
 
 local function GetInariCooldownData()
-    -- Bundled layouts are retail class/spec spell lists; they do not map onto Forever.
-    if ns.IS_FOREVER then
-        return nil, "inari cooldown layouts are retail-only and not available on WoW Forever"
-    end
+    -- Forever has its own class spell lists, so it gets its own set of layouts.
+    local layouts = ns.IS_FOREVER and InariCooldownLayoutsForever or InariCooldownLayouts
 
     local classKey = GetClassKey()
-    local classData = classKey and InariCooldownLayouts and InariCooldownLayouts[classKey]
+    local classData = classKey and layouts and layouts[classKey]
     if type(classData) ~= "string" then
         return nil, "no inari cooldown data found for " .. tostring(classKey or "current class")
     end
@@ -1240,8 +1339,14 @@ local function RenameInariCooldownLayouts(layoutManager, layoutIDs)
                 end
             end
 
-            specName = specName or specs[index] or tostring(index)
-            local newName = "inari - " .. className .. " " .. specName
+            local newName
+            if not specName and ns.IS_FOREVER and StartsWith(oldName, "inari - ") then
+                -- Forever layouts are class-wide and already carry their inari name.
+                newName = oldName
+            else
+                specName = specName or specs[index] or tostring(index)
+                newName = "inari - " .. className .. " " .. specName
+            end
             layout.name = newName
             layout.layoutName = newName
 
@@ -1320,6 +1425,7 @@ ns.ImportEditModeLayout = ImportEditModeLayout
 ns.ImportEXBossProfile = ImportEXBossProfile
 ns.ImportSArenaProfile = ImportSArenaProfile
 ns.ImportBaganatorProfile = ImportBaganatorProfile
+ns.ImportDynamicCamProfile = ImportDynamicCamProfile
 ns.ImportInariCooldownLayouts = ImportInariCooldownLayouts
 ns.GetCooldownLayoutVersionInfo = GetCooldownLayoutVersionInfo
 ns.GetClassDisplayName = GetClassDisplayName

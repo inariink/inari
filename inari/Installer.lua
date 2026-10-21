@@ -76,6 +76,14 @@ function ns.BuildInstallerPage(configFrame, ui)
             run = ns.ImportBaganatorProfile,
         },
         {
+            title = "DynamicCam",
+            copy = "Imports the inari DynamicCam camera profile.",
+            action = "IMPORT DYNAMICCAM",
+            addon = "DynamicCam",
+            skippable = true,
+            run = ns.ImportDynamicCamProfile,
+        },
+        {
             title = "Blizzard Edit Mode",
             copy = "Imports the inari Edit Mode layout. An existing inari layout is removed first so this is repeatable.",
             action = "IMPORT EDIT MODE",
@@ -87,7 +95,6 @@ function ns.BuildInstallerPage(configFrame, ui)
             copy = "Imports Cooldown Manager layouts for your current class. Existing inari layouts are replaced.",
             action = "IMPORT CDM",
             skippable = true,
-            retailOnly = true,
             run = ns.ImportInariCooldownLayouts,
         },
         {
@@ -121,10 +128,10 @@ function ns.BuildInstallerPage(configFrame, ui)
             title = "Initialize Profiles",
             copy = "Reload once so Edit Mode, action bars, cooldowns, and Ellesmere initialize before UI scale.",
             action = "RELOAD UI",
+            reload = true,
             run = function()
                 ns.SetInariAppearanceMode(page._appearanceMode or ns.GetAppearanceMode())
                 ns.MarkInstallerPendingFinalScale()
-                ReloadUI()
                 return true, "Reloading UI"
             end,
         },
@@ -132,13 +139,13 @@ function ns.BuildInstallerPage(configFrame, ui)
             title = "UI Scale",
             copy = "Apply the 0.5333 UI scale, mark the install complete, and reload one final time.",
             action = "APPLY SCALE",
+            reload = true,
             run = function()
                 if not InariDB.keepUIScale then
                     ns.ApplyInariUIScale(false)
                 end
                 ns.MarkInstallerCompleted()
                 ns.MarkProfilePromptApplied()
-                ReloadUI()
                 return true, "Reloading UI"
             end,
         },
@@ -228,10 +235,7 @@ function ns.BuildInstallerPage(configFrame, ui)
     local ellesmereCard = MakeCard("EllesmereUI", ui.Media.IconInstaller)
     local appearanceCard = MakeCard("Appearance", ui.Media.IconAppearance)
 
-    local layoutControl = ui:CreateSegmentedControl(ellesmereCard.controlHost, {
-        { label = "16:9", value = "16", width = 80, height = 26 },
-        { label = "21:9", value = "21", width = 80, height = 26 },
-    })
+    local layoutControl = ui:CreateSegmentedControl(ellesmereCard.controlHost, ns.GetLayoutAspectOptions(80, 26))
     layoutControl:SetOnChanged(function(_, aspect)
         page._layoutAspect = aspect
         if ns.SetLayoutAspect then ns.SetLayoutAspect(aspect) end
@@ -262,6 +266,7 @@ function ns.BuildInstallerPage(configFrame, ui)
             { text = "EXBoss", on = AddonPresent("EXBoss") },
             { text = "sArena Reloaded", on = AddonPresent("sArena_Reloaded") },
             { text = "Baganator", on = AddonPresent("Baganator") },
+            { text = "DynamicCam", on = AddonPresent("DynamicCam") },
         })
         blizzardCard:SetStatusLines({
             { text = "Edit Mode", on = true },
@@ -394,6 +399,13 @@ function ns.BuildInstallerPage(configFrame, ui)
             return
         end
 
+        -- WoW Forever only allows a reload early in the click that asks for it, so
+        -- ask before any other work. The client reloads once this click's code has
+        -- finished, so the step's run() below still executes and is saved.
+        if step.reload then
+            ReloadUI()
+        end
+
         if not step.run then
             page._done[index] = true
             page._skipped[index] = nil
@@ -404,8 +416,13 @@ function ns.BuildInstallerPage(configFrame, ui)
 
         page._busy = true
         page:RenderChecklist()
-        local ok, message = step.run()
-        if step.async then
+        -- A Lua error inside run() would leave _busy set and lock every button; treat it as a failure.
+        local called, ok, message = pcall(step.run)
+        if not called then
+            ok, message = false, "error: " .. tostring(ok)
+            page._busy = false
+        end
+        if step.async and called then
             if not ok then
                 if step.skippable then
                     SkipStep(index, (message or "installer step failed") .. " · skipped")

@@ -1,3 +1,9 @@
+## inari 1.11
+
+### Updated profiles
+
+- **WoW Forever:** new EllesmereUI (21:9) layout made just for Forever. You'll get an update prompt to reimport it. Retail keeps its current layout.
+
 ## inari 1.10
 
 A big one! inari now works on WoW Forever and pretty much every profile got a refresh.

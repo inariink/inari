@@ -165,6 +165,9 @@ local function GetEllesmereUIImportString(aspect)
     if type(profiles) ~= "table" then return nil end
     aspect = aspect or (ns.GetLayoutAspect and ns.GetLayoutAspect()) or "16"
     if aspect == "21" then
+        if ns.IS_FOREVER and profiles.ellesmereuiForever21 then
+            return profiles.ellesmereuiForever21
+        end
         return profiles.ellesmereui21 or profiles.ellesmereui
     end
     return profiles.ellesmereui16 or profiles.ellesmereui
@@ -523,9 +526,11 @@ local function ImportDynamicCamProfile()
     return true, "DynamicCam profile imported as inari"
 end
 
+-- Forever can bump a key on its own ("<key>Forever") without prompting retail users.
 GetBundledProfileVersion = function(key)
     local versions = InariProfiles and InariProfiles.versions
-    local version = versions and versions[key]
+    local version = versions and ns.IS_FOREVER and versions[key .. "Forever"]
+    if type(version) ~= "number" then version = versions and versions[key] end
     if type(version) == "number" then return version end
     return 1
 end
@@ -540,7 +545,8 @@ end
 -- Optional one-line "what changed" for the update prompt.
 local function GetProfileUpdateNote(key)
     local notes = InariProfiles and InariProfiles.notes
-    local note = type(notes) == "table" and notes[key]
+    local note = type(notes) == "table" and ns.IS_FOREVER and notes[key .. "Forever"]
+    if type(note) ~= "string" or note == "" then note = type(notes) == "table" and notes[key] end
     if type(note) == "string" and note ~= "" then return note end
     return nil
 end

@@ -35,10 +35,10 @@ local SUPPORTED_ADDONS = {
 
 local function NormalizePage(page)
     if page == "welcome" or page == "settings" or page == "home" or page == "runtime" then return "overview" end
-    if page == "behavior" or page == "extra" or page == "portrait" or page == "portraits" or page == "blinkii" or page == "blinkiis" then return "extras" end
+    if page == "behavior" or page == "extra" or page == "portrait" or page == "portraits" or page == "blinkii" or page == "blinkiis" or page == "graphics" or page == "fps" then return "extras" end
     if page == "layout" or page == "aspect" or page == "widescreen" or page == "ultrawide" then return "layout" end
     if page == "qol" or page == "movement" or page == "qol_movement" or page == "quality" or page == "qualityoflife" or page == "movementtracker" then return "overview" end
-    if page == "cvars" or page == "graphics" or page == "fps" or page == "uiscale" or page == "client" then return "setup" end
+    if page == "cvars" or page == "uiscale" or page == "client" then return "setup" end
     if page == "install" or page == "installer" then return "install" end
     if page == "cdm" or page == "cooldown" then return "cooldowns" end
     if page == "addons" then return "profiles" end
@@ -99,29 +99,12 @@ local function CombatTextMatches(value)
     return true
 end
 
-local function PresetMatches(cvars)
-    for _, cvar in ipairs(cvars) do
-        if tostring(ns.GetInariCVar(cvar[1])) ~= tostring(cvar[2]) then
-            return false
-        end
-    end
-    return true
-end
-
 -- Stored preset if valid, otherwise whichever preset the live CVars match.
 local function CurrentCombatTextPreset()
     local preset = InariDB.floatingCombatTextPreset
     if preset == "disabled" or preset == "enabled" then return preset end
     if CombatTextMatches(0) then return "disabled" end
     if CombatTextMatches(1) then return "enabled" end
-    return nil
-end
-
-local function CurrentGraphicsPreset()
-    local preset = InariDB.graphicsPreset
-    if preset == "inari" or preset == "fps" then return preset end
-    if PresetMatches(ns.INARI_GRAPHICS_CVARS) then return "inari" end
-    if PresetMatches(ns.FPS_CVARS) then return "fps" end
     return nil
 end
 
@@ -332,6 +315,89 @@ local function BuildExtras(frame, ui)
         Print(message)
     end)
 
+    local graphics = page:AddSection("Graphic Settings")
+    graphics:AddText("Presets apply immediately and overwrite the matching client CVars. Swap from a macro with /inari graphics next or /inari graphics <name>.", 12, "muted", 44)
+    local gfxCurrentRow = graphics:AddInfoRow("Current", "—")
+    local gfxButtonToggle = graphics:AddToggle("Show on-screen swap button", InariDB.graphicsButton == true, function(_, checked)
+        local message = ns.SetGraphicsButtonShown(checked)
+        page:SetMuted(message)
+        Print(message)
+    end)
+    graphics:AddInputRow("Name for your current graphics settings", "Save Preset", function(row, text)
+        local ok, message = ns.SaveGraphicsPreset(text)
+        if ok then
+            row:SetText("")
+            page:SetMuted(message)
+        else
+            page:SetStatus(false, message)
+        end
+        Print(message)
+    end)
+
+    -- One row per preset below the fixed rows; the section grows and shrinks with the list.
+    local gfxListTop = graphics.cursorY
+    local gfxRows = {}
+    local function GraphicsRow(index)
+        local row = gfxRows[index]
+        if row then return row end
+
+        local function Report(ok, message)
+            if ok then page:SetMuted(message) else page:SetStatus(false, message) end
+            Print(message)
+        end
+
+        row = CreateFrame("Frame", nil, graphics)
+        row:SetHeight(40)
+        row:SetPoint("TOPLEFT", 0, gfxListTop - (index - 1) * 48)
+        row:SetPoint("TOPRIGHT", 0, gfxListTop - (index - 1) * 48)
+        ui:SetFrameColor(row, ui.Theme.row)
+
+        row.label = ui:CreateText(row, "", 12, "text", "semibold")
+        row.label:SetPoint("LEFT", 14, 0)
+
+        row.apply = ui:CreateGhostButton(row, "Apply")
+        row.apply:SetSize(90, 24)
+        row.apply:SetPoint("RIGHT", -12, 0)
+        row.apply:SetOnClick(function()
+            Report(ns.ApplyGraphicsPreset(row.presetId))
+        end)
+
+        row.delete = ui:CreateGhostButton(row, "Delete")
+        row.delete:SetSize(90, 24)
+        row.delete:SetPoint("RIGHT", row.apply, "LEFT", -8, 0)
+        row.delete:SetOnClick(function()
+            Report(ns.DeleteGraphicsPreset(row.presetId))
+        end)
+
+        gfxRows[index] = row
+        return row
+    end
+
+    local function RefreshGraphics()
+        local presets = ns.GetGraphicsPresets()
+        local current = ns.GetCurrentGraphicsPreset(presets)
+        gfxCurrentRow.value:SetText(current and current.label or "custom")
+        gfxButtonToggle:SetChecked(InariDB.graphicsButton == true)
+
+        for index, preset in ipairs(presets) do
+            local row = GraphicsRow(index)
+            local active = current ~= nil and current.id == preset.id
+            row.presetId = preset.id
+            row.label:SetText(preset.label)
+            row.apply:SetLabel(active and "Active" or "Apply")
+            row.apply:SetChoiceActive(active)
+            row.delete:SetShown(not preset.builtin)
+            row:Show()
+        end
+        for index = #presets + 1, #gfxRows do
+            gfxRows[index]:Hide()
+        end
+
+        graphics.cursorY = gfxListTop - #presets * 48
+        graphics:SetHeight(-graphics.cursorY)
+        page:UpdateLayout()
+    end
+
     ns.EnsureDB()
     local portraits = InariDB.portraits
     local function ApplyPortraits(message)
@@ -390,6 +456,7 @@ local function BuildExtras(frame, ui)
         arrowsToggle:SetChecked(InariDB.targetArrows == true)
         arrowsSizeRow:SetValue(InariDB.targetArrowSize or 30, true)
         pagingToggle:SetChecked(InariDB.disableEllesmereActionBarPaging == true)
+        RefreshGraphics()
         chatControl:SetValue(InariDB.forceChatSidebarRight and "right" or "left", true)
         ns.EnsureDB()
         portraits = InariDB.portraits
@@ -561,23 +628,6 @@ local function BuildSetup(frame, ui)
         Print(message)
     end)
 
-    local graphics = page:AddSection("Graphics")
-    graphics:AddText("Graphics presets apply immediately and overwrite the matching client CVars.", 12, "muted", 36)
-    local gfxPreset = CurrentGraphicsPreset()
-    local gfxControl = graphics:AddSegmented({
-        { label = "FPS Settings", value = "fps", width = 170 },
-        { label = "Inari Graphics", value = "inari", width = 170 },
-    }, gfxPreset, function(_, preset)
-        local message
-        if preset == "inari" then
-            message = ns.FormatCVarResult("Inari's graphics applied: ", ns.ApplyInariGraphicsSettings())
-        else
-            message = ns.FormatCVarResult("FPS preset applied: ", ns.ApplyFPSSettings())
-        end
-        page:SetMuted(message)
-        Print(message)
-    end)
-
     local reset = page:AddSection("Reset")
     reset:AddButtonRow({
         {
@@ -613,8 +663,6 @@ local function BuildSetup(frame, ui)
 
         local nextFct = CurrentCombatTextPreset()
         if nextFct then fctControl:SetValue(nextFct, true) end
-        local nextGfx = CurrentGraphicsPreset()
-        if nextGfx then gfxControl:SetValue(nextGfx, true) end
     end
 
     page:UpdateLayout()
@@ -774,12 +822,14 @@ local function BuildOverview(frame, ui)
         local disablePaging = InariDB.disableEllesmereActionBarPaging == true
         local portraitsOn = InariDB.portraits and InariDB.portraits.enabled == true
         local arrowsOn = InariDB.targetArrows == true
+        local graphicsPreset = ns.GetCurrentGraphicsPreset()
         extrasCard:SetStatusLines({
             { text = "Idle Fade " .. (idleFade and "on" or "off"), on = idleFade },
             { text = "Disable friendly nameplates " .. (disableNameplates and "on" or "off"), on = disableNameplates },
             { text = "Target arrows " .. (arrowsOn and "on" or "off"), on = arrowsOn },
             { text = "Disable action bar paging " .. (disablePaging and "on" or "off"), on = disablePaging },
             { text = "Portraits " .. (portraitsOn and "on" or "off"), on = portraitsOn },
+            { text = "Graphics: " .. (graphicsPreset and graphicsPreset.label or "custom"), on = graphicsPreset ~= nil },
         })
         extrasCard:SetAttention(ns.BlinkiiPortraitsPresent and ns.BlinkiiPortraitsPresent() or false)
         extrasCard:SetAction(nil)
@@ -920,6 +970,15 @@ function ns.ShowConfigFrame(initialTab)
                 end
             end
         end
+
+        ns.OnGraphicsPresetsChanged(function()
+            if not frame:IsShown() then return end
+            if frame._selectedPage == "overview" then
+                frame.overview:Refresh()
+            elseif frame._selectedPage == "extras" and frame._pages.extras then
+                frame._pages.extras:Refresh()
+            end
+        end)
 
         frame.SelectPage = SelectPage
         frame:HookScript("OnShow", function()

@@ -1,3 +1,15 @@
+## inari 1.12
+
+### New
+
+- **Graphic Settings** in Extras. Swap between graphics presets with one click, save your current graphics settings as your own preset, and delete the ones you no longer need. The Extras tile shows the active preset.
+- **Swap from a macro:** `/inari graphics next` cycles through the presets, `/inari graphics <name>` picks one. `/inari graphics save <name>` and `/inari graphics delete <name>` manage your own.
+- **On-screen swap button** (off by default). Turn it on in Extras or with `/inari graphics button on`, drag it wherever you like, click it to switch to the next preset.
+
+### Changes
+
+- The graphics presets moved from Setup to Extras. `/inari graphics` on its own now lists the presets instead of applying the FPS one; `/inari fps` still does that.
+
 ## inari 1.11
 
 ### Updated profiles

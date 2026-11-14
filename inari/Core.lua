@@ -621,19 +621,6 @@ local function FormatCVarResult(prefix, applied, skipped, queued)
     return message
 end
 
-local function ApplyFPSSettings()
-    local applied, skipped, queued = ApplyCVarTable(FPS_CVARS)
-    if type(InariDB) == "table" then InariDB.graphicsPreset = "fps" end
-
-    return applied, skipped, queued
-end
-
-local function ApplyInariGraphicsSettings()
-    local applied, skipped, queued = ApplyCVarTable(INARI_GRAPHICS_CVARS)
-    if type(InariDB) == "table" then InariDB.graphicsPreset = "inari" end
-    return applied, skipped, queued
-end
-
 local function ApplyFloatingCombatText(value)
     local cvars = {}
     for _, name in ipairs(FLOATING_COMBAT_TEXT_CVARS) do
@@ -793,6 +780,7 @@ local DB_AUTO_PRESET_KEYS = {
 }
 local DB_TABLE_KEYS = {
     "profilePromptApplied", "profilePromptDismissed", "importedProfileVersions", "profileUpdateDismissed", "portraits",
+    "graphicsPresets",
 }
 local PORTRAIT_UNIT_ANCHORS = { player = "LEFT", target = "RIGHT" }
 
@@ -838,7 +826,7 @@ EnsureDB = function()
     if db.layoutAspect ~= "16" and db.layoutAspect ~= "21" then
         db.layoutAspect = DetectLayoutAspect()
     end
-    if db.graphicsPreset ~= "fps" and db.graphicsPreset ~= "inari" then db.graphicsPreset = nil end
+    if type(db.graphicsPreset) ~= "string" then db.graphicsPreset = nil end
     if db.floatingCombatTextPreset ~= "enabled" and db.floatingCombatTextPreset ~= "disabled" then db.floatingCombatTextPreset = nil end
     db.qol = nil
     if type(db.lastConfigPage) ~= "string" then db.lastConfigPage = "home" end
@@ -1326,6 +1314,7 @@ local RESET_KEEP_KEYS = {
     profileVersionsSeeded = true,
     layoutAspect = true,
     targetArrowPrev = true,
+    graphicsPresets = true,
 }
 
 -- Back to inari's defaults. Install and profile bookkeeping is kept, and tables are
@@ -1352,6 +1341,7 @@ local function ResetSettings()
     ns.ApplyEllesmereActionBarPagingOverride()
     UpdateIdleFadeController()
     ScheduleApply(0, true)
+    if ns.RefreshGraphicsButton then ns.RefreshGraphicsButton() end
 end
 
 -- Private EllesmereUI entry points inari relies on, grouped by the module that owns them.
@@ -1428,7 +1418,8 @@ local function ShowHelp()
     Print("general: /inari on|off, /inari apply, /inari media, /inari doctor, /inari reset")
     Print("appearance: /inari appearance dark|class, /inari layout " .. GetLayoutAspectUsage() .. ", /inari bg on|off, /inari theme on|off, /inari tint 75, /inari opacity 85, /inari shadows on|off")
     Print("extras: /inari idlefade on|off, /inari arrows on|off|30, /inari paging on|off, /inari chat right|left, /inari portraits")
-    Print("setup: /inari install [ellesmere [" .. GetLayoutAspectUsage() .. "]|bigwigs|editmode|exboss|sarena|baganator|dynamiccam|settings], /inari cvars, /inari fct on|off, /inari fps, /inari graphics inari")
+    Print("graphics: /inari graphics [next|fps|inari|<name>|save <name>|delete <name>|button on|off], /inari fps")
+    Print("setup: /inari install [ellesmere [" .. GetLayoutAspectUsage() .. "]|bigwigs|editmode|exboss|sarena|baganator|dynamiccam|settings], /inari cvars, /inari fct on|off")
     Print("profiles: /inari profiles, /inari cdm import")
 end
 
@@ -1455,6 +1446,8 @@ end
 
 SlashCmdList.INARI = function(msg)
     EnsureDB()
+    -- Preset names keep the case they were typed in.
+    local rawArg = (msg or ""):match("^%s*%S+%s*(.-)%s*$") or ""
     msg = (msg or ""):lower():match("^%s*(.-)%s*$")
     local cmd, arg = msg:match("^(%S+)%s*(.*)$")
     local toggle = ParseToggle(arg)
@@ -1660,12 +1653,10 @@ SlashCmdList.INARI = function(msg)
         end
         PrintCVarResult("floating combat text " .. (toggle and "enabled" or "disabled") .. ": ",
             ApplyFloatingCombatText(toggle and 1 or 0))
-    elseif cmd == "fps" or cmd == "graphics" then
-        if cmd == "graphics" and (arg == "inari" or arg == "inaris" or arg == "inari's") then
-            PrintCVarResult("Inari's graphics applied: ", ApplyInariGraphicsSettings())
-            return
-        end
-        PrintCVarResult("FPS settings applied: ", ApplyFPSSettings())
+    elseif cmd == "fps" then
+        ns.HandleGraphicsCommand("fps")
+    elseif cmd == "graphics" or cmd == "gfx" then
+        ns.HandleGraphicsCommand(rawArg)
     elseif cmd == "tint" then
         local value = tonumber(arg)
         if not value then
@@ -1930,8 +1921,6 @@ ns.TryLoadAddon = TryLoadAddon
 ns.GetInariCVar = GetInariCVar
 ns.SetInariCVar = SetInariCVar
 ns.ApplyCVarTable = ApplyCVarTable
-ns.ApplyFPSSettings = ApplyFPSSettings
-ns.ApplyInariGraphicsSettings = ApplyInariGraphicsSettings
 ns.ApplyFloatingCombatText = ApplyFloatingCombatText
 ns.ApplyInariUIScale = ApplyInariUIScale
 ns.RegisterMedia = RegisterMedia

@@ -1250,6 +1250,47 @@ function UI:CreateStepperRow(parent, label, value, minValue, maxValue, stepValue
     return row
 end
 
+function UI:CreateInputRow(parent, placeholder, buttonLabel, callback)
+    local row = CreateFrame("Frame", nil, parent)
+    SnapHeight(row, 40)
+    SetFlatBackground(row, self.Theme.row)
+
+    row.button = self:CreateGhostButton(row, buttonLabel)
+    SnapSize(row.button, 130, 24)
+    row.button:SetPoint("RIGHT", -12, 0)
+
+    row.edit = CreateFrame("EditBox", nil, row)
+    row.edit:SetAutoFocus(false)
+    row.edit:SetMaxLetters(40)
+    row.edit:SetPoint("LEFT", 14, 0)
+    row.edit:SetPoint("RIGHT", row.button, "LEFT", -12, 0)
+    SnapHeight(row.edit, 24)
+    SetFont(row.edit, 12, "semibold", "")
+    row.edit:SetTextColor(Unpack(UI.Theme.text))
+
+    row.placeholder = self:CreateText(row, placeholder, 12, "muted", "semibold")
+    row.placeholder:SetPoint("LEFT", row.edit, "LEFT", 0, 0)
+
+    local function Submit()
+        row.edit:ClearFocus()
+        if callback then callback(row, row.edit:GetText() or "") end
+    end
+
+    function row:SetText(text)
+        self.edit:SetText(text or "")
+    end
+
+    row.edit:SetScript("OnTextChanged", function(self)
+        row.placeholder:SetShown((self:GetText() or "") == "")
+    end)
+    row.edit:SetScript("OnEnterPressed", Submit)
+    row.edit:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+    end)
+    row.button:SetOnClick(Submit)
+    return row
+end
+
 function UI:CreateDivider(parent)
     local divider = parent:CreateTexture(nil, "ARTWORK")
     SnapHeight(divider, PixelSize(parent, 2))
@@ -1440,6 +1481,15 @@ function UI:CreateSection(parentPage, titleText, maxWidth)
 
     function section:AddStepperRow(label, value, minValue, maxValue, stepValue, callback)
         local row = UI:CreateStepperRow(self, label, value, minValue, maxValue, stepValue, callback)
+        row:SetPoint("TOPLEFT", 0, self.cursorY)
+        row:SetPoint("TOPRIGHT", 0, self.cursorY)
+        self.rows[#self.rows + 1] = row
+        Advance(self, 48)
+        return row
+    end
+
+    function section:AddInputRow(placeholder, buttonLabel, callback)
+        local row = UI:CreateInputRow(self, placeholder, buttonLabel, callback)
         row:SetPoint("TOPLEFT", 0, self.cursorY)
         row:SetPoint("TOPRIGHT", 0, self.cursorY)
         self.rows[#self.rows + 1] = row

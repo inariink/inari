@@ -9,7 +9,7 @@
 <p>
   <a href="https://inari.ink">inari.ink</a>
   ·
-  <a href="https://github.com/inariink/inari/releases/latest">Download</a>
+  <a href="https://github.com/yunodu/inari/releases/latest">Download</a>
   ·
   <a href="https://inari.ink">CurseForge</a>
   ·
@@ -39,7 +39,7 @@ If it does not open:
 /inari install
 ```
 
-No WowUp? Grab [inari.zip](https://github.com/inariink/inari/releases/latest/download/inari.zip) or install from [CurseForge](https://inari.ink). Those are inari only — EllesmereUI and the rest still have to be installed separately. A [video guide](https://www.youtube.com/watch?v=W4Ub_4-39Xk) covers the full setup.
+No WowUp? Grab [inari.zip](https://github.com/yunodu/inari/releases/latest/download/inari.zip) or install from [CurseForge](https://inari.ink). Those are inari only — EllesmereUI and the rest still have to be installed separately. A [video guide](https://www.youtube.com/watch?v=W4Ub_4-39Xk) covers the full setup.
 
 ## What it does
 
